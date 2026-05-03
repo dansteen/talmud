@@ -158,28 +158,31 @@ async function detectRegionsForPage(pdfPage, slug, daf, amud, onReady) {
   await new Promise(r => setTimeout(r, 50));
   const detected = await detectRegions(canvas, pdfPage);
   if (!DEBUG_REGIONS) {
-    // Strip masks before caching — they're bulky and recomputable
-    const cacheable = detected.map(({ mask, maskW, maskH, ...rest }) => rest);
-    setCachedRegions(slug, daf, amud, cacheable);
+    setCachedRegions(slug, daf, amud, detected);
   }
   finish(detected);
 }
 
-const REGION_COLORS = {
-  gemara:     [80, 255, 130],
-  commentary: [255, 200, 50],
-  reference:  [150, 170, 255],
-};
-
 function drawOverlay(regions) {
   overlay.innerHTML = '';
   for (const r of regions) {
-    if (r.mask && r.maskW && r.maskH) {
-      overlay.appendChild(buildShapeCanvas(r));
+    if (r.bands && r.bands.length > 0) {
+      // Stair-step polygon: render each band as a rectangle
+      for (const b of r.bands) {
+        const rect = document.createElement('div');
+        rect.className = `region-band region-${r.type}`;
+        rect.style.position = 'absolute';
+        rect.style.left = (b.xMin * 100) + '%';
+        rect.style.top = (b.yStart * 100) + '%';
+        rect.style.width = ((b.xMax - b.xMin) * 100) + '%';
+        rect.style.height = ((b.yEnd - b.yStart) * 100) + '%';
+        overlay.appendChild(rect);
+      }
     } else {
-      // Fallback: cached regions don't carry the mask, just draw the bbox
+      // Fallback: cached regions don't carry bands, just draw the bbox
       const box = document.createElement('div');
       box.className = `region-box region-${r.type}`;
+      box.style.position = 'absolute';
       box.style.left = (r.x * 100) + '%';
       box.style.top = (r.y * 100) + '%';
       box.style.width = (r.w * 100) + '%';
@@ -210,35 +213,6 @@ function drawOverlay(regions) {
       overlay.appendChild(dot);
     }
   }
-}
-
-// Render a region's component-mask as a small canvas, CSS-stretched to fit
-// the region's bbox. Each ink pixel is filled with the region's tier color.
-function buildShapeCanvas(region) {
-  const { mask, maskW, maskH, type } = region;
-  const c = document.createElement('canvas');
-  c.width = maskW;
-  c.height = maskH;
-  const ctx = c.getContext('2d');
-  const img = ctx.createImageData(maskW, maskH);
-  const [cr, cg, cb] = REGION_COLORS[type] ?? [200, 200, 200];
-  for (let i = 0; i < mask.length; i++) {
-    if (mask[i]) {
-      img.data[i * 4]     = cr;
-      img.data[i * 4 + 1] = cg;
-      img.data[i * 4 + 2] = cb;
-      img.data[i * 4 + 3] = 110;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-
-  c.className = `region-shape region-${type}`;
-  c.style.position = 'absolute';
-  c.style.left = (region.x * 100) + '%';
-  c.style.top = (region.y * 100) + '%';
-  c.style.width = (region.w * 100) + '%';
-  c.style.height = (region.h * 100) + '%';
-  return c;
 }
 
 export function animateTo(targetX, targetY, targetScale, onDone) {

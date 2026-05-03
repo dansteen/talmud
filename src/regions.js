@@ -15,6 +15,8 @@ const TARGET_WIDTH = 400;            // analysis canvas width in pixels
 const H_DILATE = 3;                  // horizontal merge radius (within column)
 const V_DILATE = 8;                  // vertical merge radius (across lines)
 const MIN_COMPONENT_AREA_RATIO = 0.004;  // drop components smaller than 0.4% of page
+const BAND_TOLERANCE_PX = 10;        // rows within this many px of x-range merge into one band
+const BAND_SMOOTH_WINDOW = 5;        // smooth per-row x-range over ±N rows before banding
 
 const MIN_TIER_REF_ITEMS = 30;
 const TIER_GEMARA = 0.92;
@@ -45,17 +47,26 @@ export async function detectRegions(canvas, pdfPage) {
   const significant = components.filter(c => c.area >= minArea);
 
   const regions = significant.map(comp => {
+    // Reduce the per-pixel mask to a series of axis-aligned bands. Each band
+    // is a rectangle covering rows where the component's x-range is roughly
+    // stable. Stacked bands form a stair-step polygon.
+    const bands = extractBands(comp, mask.width, mask.height);
+
+    // Recompute bbox from bands (slightly tighter than raw component bbox)
+    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+    for (const b of bands) {
+      if (b.xMin < xMin) xMin = b.xMin;
+      if (b.xMax > xMax) xMax = b.xMax;
+      if (b.yStart < yMin) yMin = b.yStart;
+      if (b.yEnd > yMax) yMax = b.yEnd;
+    }
+
     const r = {
-      x: comp.minX / mask.width,
-      y: comp.minY / mask.height,
-      w: (comp.maxX - comp.minX + 1) / mask.width,
-      h: (comp.maxY - comp.minY + 1) / mask.height,
-      // Cropped pixel mask — 1 wherever this component has ink, 0 elsewhere.
-      // Indexed at (maskW, maskH) resolution, addressed in [0..1] within the
-      // bbox via row*maskW + col.
-      mask: comp.mask,
-      maskW: comp.maskW,
-      maskH: comp.maskH,
+      x: xMin,
+      y: yMin,
+      w: xMax - xMin,
+      h: yMax - yMin,
+      bands,
     };
 
     const inside = items.filter(item => {
@@ -202,6 +213,81 @@ function findComponents(mask, w, h) {
   return components;
 }
 
+// Convert a component's pixel mask into a series of axis-aligned bands.
+// Each band is a rectangle (yStart..yEnd, xMin..xMax) over rows whose
+// x-range is similar within BAND_TOLERANCE_PX. Stacked together they form
+// a stair-step polygon that approximates the column shape with straight
+// horizontal and vertical edges.
+//
+// Per-row x-ranges are smoothed by a sliding window so single-line outliers
+// (a short line in the middle of a paragraph) don't trigger a new band.
+function extractBands(comp, canvasW, canvasH) {
+  const rowRanges = new Array(comp.maskH);
+  for (let dy = 0; dy < comp.maskH; dy++) {
+    let rMin = -1, rMax = -1;
+    for (let dx = 0; dx < comp.maskW; dx++) {
+      if (comp.mask[dy * comp.maskW + dx]) {
+        if (rMin === -1) rMin = dx;
+        rMax = dx;
+      }
+    }
+    rowRanges[dy] = rMin === -1 ? null : { min: rMin, max: rMax };
+  }
+
+  // Smooth: each row's x-range becomes the union of nearby rows' ranges,
+  // so an outlier short line doesn't split a band.
+  const smoothed = new Array(comp.maskH);
+  for (let dy = 0; dy < comp.maskH; dy++) {
+    let sMin = Infinity, sMax = -Infinity;
+    const lo = Math.max(0, dy - BAND_SMOOTH_WINDOW);
+    const hi = Math.min(comp.maskH - 1, dy + BAND_SMOOTH_WINDOW);
+    for (let i = lo; i <= hi; i++) {
+      const r = rowRanges[i];
+      if (!r) continue;
+      if (r.min < sMin) sMin = r.min;
+      if (r.max > sMax) sMax = r.max;
+    }
+    smoothed[dy] = sMin === Infinity ? null : { min: sMin, max: sMax };
+  }
+
+  const bands = [];
+  let cur = null;
+  for (let dy = 0; dy < smoothed.length; dy++) {
+    const r = smoothed[dy];
+    if (!r) {
+      if (cur) { bands.push(cur); cur = null; }
+      continue;
+    }
+    const aMinX = comp.minX + r.min;
+    const aMaxX = comp.minX + r.max;
+    const ay = comp.minY + dy;
+
+    if (!cur) {
+      cur = { yStart: ay, yEnd: ay, xMin: aMinX, xMax: aMaxX };
+      continue;
+    }
+
+    if (Math.abs(aMinX - cur.xMin) <= BAND_TOLERANCE_PX &&
+        Math.abs(aMaxX - cur.xMax) <= BAND_TOLERANCE_PX) {
+      cur.yEnd = ay;
+      cur.xMin = Math.min(cur.xMin, aMinX);
+      cur.xMax = Math.max(cur.xMax, aMaxX);
+    } else {
+      bands.push(cur);
+      cur = { yStart: ay, yEnd: ay, xMin: aMinX, xMax: aMaxX };
+    }
+  }
+  if (cur) bands.push(cur);
+
+  // Normalize band coordinates to [0..1] page-relative
+  return bands.map(b => ({
+    yStart: b.yStart / canvasH,
+    yEnd: (b.yEnd + 1) / canvasH,
+    xMin: b.xMin / canvasW,
+    xMax: (b.xMax + 1) / canvasW,
+  }));
+}
+
 function extractItems(rawItems, viewport) {
   const items = [];
   for (const item of rawItems) {
@@ -268,9 +354,9 @@ function medianFontSize(items) {
 }
 
 // Find the smallest region containing a point given in canvas-relative CSS coords.
-// When a region has a shape mask, the point must fall on the actual shape — not
-// just inside the bbox — so adjacent columns whose bboxes overlap don't claim
-// taps that visually belong to the other column.
+// When a region has bands, the point must fall in the band whose y-range contains
+// it AND within that band's x-range — so adjacent columns whose bboxes overlap
+// don't claim taps that visually belong to the other column.
 export function regionAtPoint(regions, px, py, canvasCssW, canvasCssH) {
   const nx = px / canvasCssW;
   const ny = py / canvasCssH;
@@ -280,11 +366,15 @@ export function regionAtPoint(regions, px, py, canvasCssW, canvasCssH) {
     if (nx < r.x || nx > r.x + r.w) continue;
     if (ny < r.y || ny > r.y + r.h) continue;
 
-    if (r.mask && r.maskW > 0 && r.maskH > 0) {
-      const lx = Math.floor((nx - r.x) / r.w * r.maskW);
-      const ly = Math.floor((ny - r.y) / r.h * r.maskH);
-      const idx = ly * r.maskW + lx;
-      if (idx < 0 || idx >= r.mask.length || !r.mask[idx]) continue;
+    if (r.bands && r.bands.length > 0) {
+      let inBand = false;
+      for (const b of r.bands) {
+        if (ny >= b.yStart && ny <= b.yEnd && nx >= b.xMin && nx <= b.xMax) {
+          inBand = true;
+          break;
+        }
+      }
+      if (!inBand) continue;
     }
 
     const area = r.w * r.h;

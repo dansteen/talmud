@@ -73,6 +73,23 @@ html, body, #app {
   background: rgba(150, 170, 255, 0.06);
 }
 
+/* Banded region overlays — stack to form stair-step polygons */
+.region-band {
+  pointer-events: none;
+}
+
+.region-band.region-gemara {
+  background: rgba(80, 255, 130, 0.22);
+}
+
+.region-band.region-commentary {
+  background: rgba(255, 200, 50, 0.22);
+}
+
+.region-band.region-reference {
+  background: rgba(150, 170, 255, 0.22);
+}
+
 .region-label {
   position: absolute;
   top: -1px;

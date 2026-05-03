@@ -20,16 +20,16 @@ html, body, #app {
   position: fixed;
   inset: 0;
   overflow: hidden;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
+  background: #1a1208;
 }
 
 #page-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: block;
   transform-origin: 0 0;
   will-change: transform;
-  cursor: default;
 }
 
 #page-canvas.animating {

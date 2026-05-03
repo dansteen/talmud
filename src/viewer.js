@@ -94,7 +94,13 @@ export async function loadPage(url, slug, daf, amud, onRegionsReady) {
   document.getElementById('region-pending').classList.remove('hidden');
   canvas.style.opacity = '0';
 
-  const pdfDoc = await pdfjsLib.getDocument({ url, withCredentials: false }).promise;
+  const pdfDoc = await pdfjsLib.getDocument({
+    url,
+    withCredentials: false,
+    standardFontDataUrl: '/pdfjs/standard_fonts/',
+    cMapUrl: '/pdfjs/cmaps/',
+    cMapPacked: true,
+  }).promise;
   currentPdfPage = await pdfDoc.getPage(1);
 
   const natural = currentPdfPage.getViewport({ scale: 1 });

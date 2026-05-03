@@ -1,20 +1,15 @@
 // Region detection for typeset Talmud pages using PDF.js text content.
 //
-// Strategy: split items into three font-size tiers (gemara / commentary /
-// reference) FIRST, then find columns within each tier independently using
-// start-x histogram clustering. Items from different tiers don't interfere,
-// so the gaps between visual columns become visible.
-//
-// Algorithm:
-//   1. Convert all item positions from PDF coords to viewport (display) coords.
-//   2. Pick a "reference" font size: largest substantial size (the gemara body).
-//   3. Sort items into three tiers by ratio to the reference.
-//   4. For each tier, build a histogram of item *start-x* positions and find
-//      runs separated by enough empty buckets. Don't use inferred widths for
-//      occupancy — that bridges columns.
-//   5. For each cluster, the bounding box uses the actual extent of items
-//      (start-x to inferred-right), capped at the next within-tier column's
-//      start so it can't overflow.
+// Two-stage approach:
+//   1. Tier each item by font size (gemara / commentary / reference). Detect
+//      columns separately within each tier — items from different tiers
+//      don't interfere with each other's column gap detection.
+//   2. Merge columns across tiers whose x-ranges overlap. Commentaries quote
+//      the Gemara at its font size, so per-tier detection scatters those
+//      quote items as tiny "gemara" sub-columns inside Rashi/Tosafot. After
+//      merging, each merged column is typed by which tier has the most
+//      items in it — the commentary column with a few quotes correctly
+//      ends up as 'commentary'.
 
 const X_BUCKET = 4;
 const MIN_GAP_BUCKETS = 3;
@@ -44,18 +39,27 @@ export async function detectRegions(pdfPage) {
 
   const tiers = splitByFontTier(items);
 
-  const regions = [];
+  // Detect columns within each tier
+  const tierColumns = [];
   for (const tier of tiers) {
     const cols = findColumnsByStartX(tier.items, pageW);
-    cols.sort((a, b) => a.range.startX - b.range.startX);
-
-    for (let i = 0; i < cols.length; i++) {
-      if (cols[i].items.length < MIN_COLUMN_ITEMS) continue;
-      const nextStart = cols[i + 1]?.range.startX ?? pageW;
-      const region = buildRegion(cols[i], pageW, pageH, nextStart);
-      region.type = tier.type;
-      regions.push(region);
+    for (const col of cols) {
+      if (col.items.length < MIN_COLUMN_ITEMS) continue;
+      tierColumns.push(col);
     }
+  }
+
+  // Merge across tiers when x-ranges overlap (or are very close together)
+  const merged = mergeOverlappingColumns(tierColumns);
+
+  // Build regions, capping right edges at the next column's start
+  merged.sort((a, b) => a.range.startX - b.range.startX);
+  const regions = [];
+  for (let i = 0; i < merged.length; i++) {
+    const nextStart = merged[i + 1]?.range.startX ?? pageW;
+    const region = buildRegion(merged[i], pageW, pageH, nextStart);
+    region.type = dominantTier(merged[i].items);
+    regions.push(region);
   }
 
   logDiagnostic(items, pageW, pageH, regions, tiers);
@@ -69,8 +73,6 @@ function extractItems(rawItems, viewport) {
     const fontSize = Math.abs(item.transform[0]);
     if (fontSize < 1) continue;
 
-    // Convert from PDF user space to viewport (top-down) coordinates.
-    // Handles non-zero MediaBox origins, rotations, etc.
     const [vx, vy] = viewport.convertToViewportPoint(
       item.transform[4],
       item.transform[5]
@@ -78,11 +80,12 @@ function extractItems(rawItems, viewport) {
 
     items.push({
       x: vx,
-      yBaseline: vy,  // top-down viewport coords
+      yBaseline: vy,
       str: item.str,
       fontSize,
       fontName: item.fontName,
       dir: item.dir,
+      _tier: null,
     });
   }
   return items;
@@ -99,6 +102,7 @@ function splitByFontTier(items) {
     .sort((a, b) => b[0] - a[0]);
 
   if (substantial.length === 0) {
+    for (const item of items) item._tier = 'gemara';
     return [{ type: 'gemara', items, refSize: items[0]?.fontSize ?? 0 }];
   }
 
@@ -108,9 +112,9 @@ function splitByFontTier(items) {
 
   const gemara = [], commentary = [], reference = [];
   for (const item of items) {
-    if (item.fontSize >= gemaraThreshold) gemara.push(item);
-    else if (item.fontSize >= commentaryThreshold) commentary.push(item);
-    else reference.push(item);
+    if (item.fontSize >= gemaraThreshold) { item._tier = 'gemara'; gemara.push(item); }
+    else if (item.fontSize >= commentaryThreshold) { item._tier = 'commentary'; commentary.push(item); }
+    else { item._tier = 'reference'; reference.push(item); }
   }
 
   const tiers = [];
@@ -120,8 +124,6 @@ function splitByFontTier(items) {
   return tiers;
 }
 
-// Cluster items by start-x only. Inferred widths can bridge columns, so we
-// keep occupancy point-based: each item contributes to one bucket.
 function findColumnsByStartX(items, pageW) {
   if (items.length === 0) return [];
 
@@ -149,9 +151,39 @@ function findColumnsByStartX(items, pageW) {
   }
 
   return runs.map(run => ({
-    range: run,
+    range: { ...run },
     items: items.filter(item => item.x >= run.startX && item.x < run.endX),
   }));
+}
+
+// Merge columns whose x-ranges overlap (or touch within MIN_GAP_BUCKETS).
+// This collapses gemara-quote sub-columns inside commentary columns into
+// the parent commentary column.
+function mergeOverlappingColumns(cols) {
+  if (cols.length === 0) return [];
+  const sorted = [...cols].sort((a, b) => a.range.startX - b.range.startX);
+  const merged = [{ range: { ...sorted[0].range }, items: [...sorted[0].items] }];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const cur = sorted[i];
+    const last = merged[merged.length - 1];
+    const tolerance = MIN_GAP_BUCKETS * X_BUCKET;
+    if (cur.range.startX <= last.range.endX + tolerance) {
+      last.range.endX = Math.max(last.range.endX, cur.range.endX);
+      last.items.push(...cur.items);
+    } else {
+      merged.push({ range: { ...cur.range }, items: [...cur.items] });
+    }
+  }
+  return merged;
+}
+
+function dominantTier(items) {
+  const counts = { gemara: 0, commentary: 0, reference: 0 };
+  for (const item of items) counts[item._tier]++;
+  if (counts.gemara >= counts.commentary && counts.gemara >= counts.reference) return 'gemara';
+  if (counts.commentary >= counts.reference) return 'commentary';
+  return 'reference';
 }
 
 function buildRegion(col, pageW, pageH, nextColumnStart) {
@@ -164,8 +196,6 @@ function buildRegion(col, pageW, pageH, nextColumnStart) {
     const itemW = item.str.length * item.fontSize * HEBREW_CHAR_WIDTH;
     const left = item.x;
     const right = item.x + itemW;
-    // Viewport coords: yBaseline is top-down. Text top sits above baseline by
-    // ~font height; descent is small.
     const top = item.yBaseline - item.fontSize;
     const bottom = item.yBaseline + item.fontSize * 0.25;
 
@@ -175,8 +205,6 @@ function buildRegion(col, pageW, pageH, nextColumnStart) {
     if (bottom > yMax) yMax = bottom;
   }
 
-  // Cap the right edge at the start of the next column in this tier so the
-  // bbox can't bleed into a neighboring column.
   xMax = Math.min(xMax, nextColumnStart - X_BUCKET);
 
   xMin = Math.max(0, xMin);
@@ -207,7 +235,6 @@ function logDiagnostic(items, pageW, pageH, regions, tiers) {
   console.log('[regions] detected:', regions);
 }
 
-// Find the smallest region containing a point given in canvas-relative CSS coords.
 export function regionAtPoint(regions, px, py, canvasCssW, canvasCssH) {
   const nx = px / canvasCssW;
   const ny = py / canvasCssH;

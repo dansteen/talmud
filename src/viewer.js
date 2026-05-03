@@ -148,12 +148,16 @@ async function detectRegionsForPage(pdfPage, slug, daf, amud, onReady) {
     onReady?.(rs);
   };
 
-  const cached = getCachedRegions(slug, daf, amud);
-  if (cached) { finish(cached); return; }
+  // In debug mode, always re-run detection so algorithm changes are visible
+  // without having to navigate to an uncached page.
+  if (!DEBUG_REGIONS) {
+    const cached = getCachedRegions(slug, daf, amud);
+    if (cached) { finish(cached); return; }
+  }
 
   await new Promise(r => setTimeout(r, 50));
   const detected = await detectRegions(pdfPage);
-  setCachedRegions(slug, daf, amud, detected);
+  if (!DEBUG_REGIONS) setCachedRegions(slug, daf, amud, detected);
   finish(detected);
 }
 

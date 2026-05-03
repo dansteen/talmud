@@ -50,6 +50,12 @@ export async function detectRegions(canvas, pdfPage) {
       y: comp.minY / mask.height,
       w: (comp.maxX - comp.minX + 1) / mask.width,
       h: (comp.maxY - comp.minY + 1) / mask.height,
+      // Cropped pixel mask — 1 wherever this component has ink, 0 elsewhere.
+      // Indexed at (maskW, maskH) resolution, addressed in [0..1] within the
+      // bbox via row*maskW + col.
+      mask: comp.mask,
+      maskW: comp.maskW,
+      maskH: comp.maskH,
     };
 
     const inside = items.filter(item => {
@@ -129,7 +135,8 @@ function dilate(mask, w, h, hRadius, vRadius) {
   return out;
 }
 
-// 4-connected component labeling via BFS with a flat queue
+// 4-connected component labeling via BFS with a flat queue.
+// Returns each component with its bbox AND its pixel mask cropped to bbox.
 function findComponents(mask, w, h) {
   const visited = new Uint8Array(w * h);
   const components = [];
@@ -145,6 +152,7 @@ function findComponents(mask, w, h) {
       visited[idx] = 1;
 
       let minX = x, minY = y, maxX = x, maxY = y, area = 0;
+      const memberStart = tail - 1; // queue[memberStart..tail-1] holds all member indices
 
       while (head < tail) {
         const cur = queue[head++];
@@ -174,7 +182,21 @@ function findComponents(mask, w, h) {
         }
       }
 
-      components.push({ minX, minY, maxX, maxY, area });
+      // Build cropped mask covering just this component's bbox
+      const maskW = maxX - minX + 1;
+      const maskH = maxY - minY + 1;
+      const compMask = new Uint8Array(maskW * maskH);
+      for (let i = memberStart; i < tail; i++) {
+        const px = queue[i];
+        const cx = px % w;
+        const cy = (px - cx) / w;
+        compMask[(cy - minY) * maskW + (cx - minX)] = 1;
+      }
+
+      components.push({
+        minX, minY, maxX, maxY, area,
+        mask: compMask, maskW, maskH,
+      });
     }
   }
   return components;
@@ -246,6 +268,9 @@ function medianFontSize(items) {
 }
 
 // Find the smallest region containing a point given in canvas-relative CSS coords.
+// When a region has a shape mask, the point must fall on the actual shape — not
+// just inside the bbox — so adjacent columns whose bboxes overlap don't claim
+// taps that visually belong to the other column.
 export function regionAtPoint(regions, px, py, canvasCssW, canvasCssH) {
   const nx = px / canvasCssW;
   const ny = py / canvasCssH;
@@ -254,6 +279,14 @@ export function regionAtPoint(regions, px, py, canvasCssW, canvasCssH) {
   for (const r of regions) {
     if (nx < r.x || nx > r.x + r.w) continue;
     if (ny < r.y || ny > r.y + r.h) continue;
+
+    if (r.mask && r.maskW > 0 && r.maskH > 0) {
+      const lx = Math.floor((nx - r.x) / r.w * r.maskW);
+      const ly = Math.floor((ny - r.y) / r.h * r.maskH);
+      const idx = ly * r.maskW + lx;
+      if (idx < 0 || idx >= r.mask.length || !r.mask[idx]) continue;
+    }
+
     const area = r.w * r.h;
     if (area < bestArea) { best = r; bestArea = area; }
   }

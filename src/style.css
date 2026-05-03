@@ -76,18 +76,22 @@ html, body, #app {
 /* Banded region overlays — stack to form stair-step polygons */
 .region-band {
   pointer-events: none;
+  outline-offset: -1px;
 }
 
 .region-band.region-gemara {
-  background: rgba(80, 255, 130, 0.22);
+  background: rgba(80, 255, 130, 0.18);
+  outline: 1.5px solid rgba(80, 255, 130, 0.9);
 }
 
 .region-band.region-commentary {
-  background: rgba(255, 200, 50, 0.22);
+  background: rgba(255, 200, 50, 0.18);
+  outline: 1.5px solid rgba(255, 200, 50, 0.9);
 }
 
 .region-band.region-reference {
-  background: rgba(150, 170, 255, 0.22);
+  background: rgba(150, 170, 255, 0.18);
+  outline: 1.5px solid rgba(150, 170, 255, 0.9);
 }
 
 .region-label {

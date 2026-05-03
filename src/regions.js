@@ -15,8 +15,9 @@ const TARGET_WIDTH = 400;            // analysis canvas width in pixels
 const H_DILATE = 3;                  // horizontal merge radius (within column)
 const V_DILATE = 8;                  // vertical merge radius (across lines)
 const MIN_COMPONENT_AREA_RATIO = 0.004;  // drop components smaller than 0.4% of page
-const BAND_TOLERANCE_PX = 10;        // rows within this many px of x-range merge into one band
-const BAND_SMOOTH_WINDOW = 5;        // smooth per-row x-range over ±N rows before banding
+const BAND_WIDTH_RATIO = 0.30;       // rows merge into the same band if widths are within this fraction
+const BAND_SMOOTH_WINDOW = 10;       // smooth per-row x-range over ±N rows before banding
+const MIN_BAND_HEIGHT_RATIO = 0.05;  // bands shorter than this fraction of region height merge into neighbor
 
 const MIN_TIER_REF_ITEMS = 30;
 const TIER_GEMARA = 0.92;
@@ -267,8 +268,14 @@ function extractBands(comp, canvasW, canvasH) {
       continue;
     }
 
-    if (Math.abs(aMinX - cur.xMin) <= BAND_TOLERANCE_PX &&
-        Math.abs(aMaxX - cur.xMax) <= BAND_TOLERANCE_PX) {
+    // New band only when the width changes by more than a sizeable fraction
+    // — typical Talmud columns have at most 2-3 distinct widths and the
+    // difference between them is substantial (>30%).
+    const newWidth = aMaxX - aMinX;
+    const curWidth = cur.xMax - cur.xMin;
+    const widthRatio = Math.abs(newWidth - curWidth) / Math.max(newWidth, curWidth, 1);
+
+    if (widthRatio < BAND_WIDTH_RATIO) {
       cur.yEnd = ay;
       cur.xMin = Math.min(cur.xMin, aMinX);
       cur.xMax = Math.max(cur.xMax, aMaxX);
@@ -278,6 +285,26 @@ function extractBands(comp, canvasW, canvasH) {
     }
   }
   if (cur) bands.push(cur);
+
+  // Merge thin bands (single-line outliers) into the previous band
+  if (bands.length > 1) {
+    const totalH = bands[bands.length - 1].yEnd - bands[0].yStart;
+    const minH = totalH * MIN_BAND_HEIGHT_RATIO;
+    const merged = [];
+    for (const b of bands) {
+      const h = b.yEnd - b.yStart;
+      if (h < minH && merged.length > 0) {
+        const prev = merged[merged.length - 1];
+        prev.yEnd = Math.max(prev.yEnd, b.yEnd);
+        prev.xMin = Math.min(prev.xMin, b.xMin);
+        prev.xMax = Math.max(prev.xMax, b.xMax);
+      } else {
+        merged.push({ ...b });
+      }
+    }
+    bands.length = 0;
+    bands.push(...merged);
+  }
 
   // Normalize band coordinates to [0..1] page-relative
   return bands.map(b => ({

@@ -100,6 +100,11 @@ export async function loadPage(url, slug, daf, amud, onRegionsReady) {
     standardFontDataUrl: '/pdfjs/standard_fonts/',
     cMapUrl: '/pdfjs/cmaps/',
     cMapPacked: true,
+    // Draw glyphs directly to canvas instead of using @font-face. The browser's
+    // font metric calculations don't match the PDF's embedded Hebrew fonts,
+    // which spreads letters within words apart. Canvas drawing uses the PDF's
+    // own metrics and lays out words correctly.
+    disableFontFace: true,
   }).promise;
   currentPdfPage = await pdfDoc.getPage(1);
 

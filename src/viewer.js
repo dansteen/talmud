@@ -7,6 +7,15 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 const canvas = document.getElementById('page-canvas');
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
+const overlay = document.getElementById('region-overlay');
+
+const DEBUG_REGIONS = new URLSearchParams(location.search).has('debug');
+if (DEBUG_REGIONS) overlay.classList.add('visible');
+
+// Toggle the overlay with the 'd' key
+window.addEventListener('keydown', e => {
+  if (e.key === 'd' || e.key === 'D') overlay.classList.toggle('visible');
+});
 
 // Page geometry (set once per loaded page)
 let pageW = 1;       // natural PDF width (PDF points)
@@ -36,8 +45,11 @@ function fitScreenScale() {
 }
 
 function applyTransform(animated = false) {
+  const t = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
   canvas.classList.toggle('animating', animated);
-  canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+  canvas.style.transform = t;
+  overlay.classList.toggle('animating', animated);
+  overlay.style.transform = t;
 }
 
 async function renderAtScale(s) {
@@ -55,6 +67,9 @@ async function renderAtScale(s) {
   view.cssW = pageW * s;
   view.cssH = pageH * s;
   renderScale = s;
+
+  overlay.style.width = view.cssW + 'px';
+  overlay.style.height = view.cssH + 'px';
 
   renderTask = currentPdfPage.render({ canvasContext: ctx, viewport });
   try {
@@ -122,24 +137,43 @@ export async function loadPage(url, slug, daf, amud, onRegionsReady) {
 
   canvas.style.opacity = '1';
 
-  detectRegionsForPage(slug, daf, amud, onRegionsReady);
+  detectRegionsForPage(currentPdfPage, slug, daf, amud, onRegionsReady);
 }
 
-async function detectRegionsForPage(slug, daf, amud, onReady) {
-  const cached = getCachedRegions(slug, daf, amud);
-  if (cached) {
-    regions = cached;
+async function detectRegionsForPage(pdfPage, slug, daf, amud, onReady) {
+  const finish = (rs) => {
+    regions = rs;
     document.getElementById('region-pending').classList.add('hidden');
-    onReady?.(regions);
-    return;
-  }
+    drawOverlay(rs);
+    onReady?.(rs);
+  };
+
+  const cached = getCachedRegions(slug, daf, amud);
+  if (cached) { finish(cached); return; }
 
   await new Promise(r => setTimeout(r, 50));
-  const detected = detectRegions(canvas);
-  regions = detected;
+  const detected = await detectRegions(pdfPage);
   setCachedRegions(slug, daf, amud, detected);
-  document.getElementById('region-pending').classList.add('hidden');
-  onReady?.(regions);
+  finish(detected);
+}
+
+function drawOverlay(regions) {
+  overlay.innerHTML = '';
+  for (const r of regions) {
+    const box = document.createElement('div');
+    box.className = `region-box region-${r.type}`;
+    box.style.left = (r.x * 100) + '%';
+    box.style.top = (r.y * 100) + '%';
+    box.style.width = (r.w * 100) + '%';
+    box.style.height = (r.h * 100) + '%';
+
+    const label = document.createElement('span');
+    label.className = 'region-label';
+    label.textContent = `${r.type} fs${r.fontSize.toFixed(1)} n${r.itemCount ?? '?'}`;
+    box.appendChild(label);
+
+    overlay.appendChild(box);
+  }
 }
 
 export function animateTo(targetX, targetY, targetScale, onDone) {

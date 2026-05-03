@@ -32,8 +32,51 @@ html, body, #app {
   will-change: transform;
 }
 
-#page-canvas.animating {
+#page-canvas.animating,
+#region-overlay.animating {
   transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Region debug overlay (?debug=1) */
+#region-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+  pointer-events: none;
+  display: none;
+}
+
+#region-overlay.visible {
+  display: block;
+}
+
+.region-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid;
+}
+
+.region-gemara {
+  border-color: rgba(80, 255, 130, 0.85);
+  background: rgba(80, 255, 130, 0.08);
+}
+
+.region-commentary {
+  border-color: rgba(255, 200, 50, 0.85);
+  background: rgba(255, 200, 50, 0.06);
+}
+
+.region-label {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  font: 10px/1.2 ui-monospace, monospace;
+  color: white;
+  background: rgba(0, 0, 0, 0.75);
+  padding: 1px 4px;
+  white-space: nowrap;
 }
 
 /* ── Loading ── */

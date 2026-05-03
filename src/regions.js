@@ -1,137 +1,132 @@
-// Detects column regions on a rendered Talmud page canvas.
+// Detects column regions on a typeset Talmud page using PDF.js text content.
 //
-// A Vilna edition page has a center Gemara column flanked by narrower
-// commentary columns (Rashi, Tosafot). We find column boundaries by
-// projecting ink density onto the x-axis and locating whitespace valleys.
+// We get exact glyph positions and font sizes from the PDF — far more reliable
+// than pixel analysis. Algorithm:
+//   1. Pull every text item with its position/width/font size.
+//   2. Build an x-axis occupancy map; horizontal gaps split columns.
+//   3. Group items into columns by which gap they fall between.
+//   4. Compute each column's bounding box and median font size.
+//   5. Classify regions: largest font sizes = gemara, smaller = commentary.
 //
-// Returns an array of region objects sorted left-to-right:
-//   { x, y, w, h }  — normalized [0..1] relative to canvas CSS dimensions
-//   type: 'gemara' | 'commentary'
+// All output coordinates are normalized [0..1] relative to the natural page size.
 
-const SMOOTH_WINDOW = 20;   // px — moving average window for ink density curve
-const VALLEY_THRESHOLD = 0.03; // ink density below this = candidate gap
-const MIN_GAP_PX = 8;      // minimum width of a real column gap
-const MARGIN_TRIM = 0.03;  // trim this fraction from top/bottom to skip headers/footers
+const COLUMN_GAP_TOLERANCE = 8;   // PDF units — gaps narrower than this don't split
+const MIN_COLUMN_WIDTH = 15;      // PDF units — narrower runs are dropped
+const MIN_ITEM_COUNT = 2;         // single-glyph artifacts ignored
+const GEMARA_FONT_RATIO = 0.85;   // font size ≥ this fraction of max → gemara
 
-function movingAverage(arr, window) {
-  const result = new Float32Array(arr.length);
-  for (let i = 0; i < arr.length; i++) {
-    let sum = 0, count = 0;
-    for (let j = Math.max(0, i - window); j <= Math.min(arr.length - 1, i + window); j++) {
-      sum += arr[j]; count++;
-    }
-    result[i] = sum / count;
-  }
-  return result;
-}
+export async function detectRegions(pdfPage) {
+  const naturalViewport = pdfPage.getViewport({ scale: 1 });
+  const pageW = naturalViewport.width;
+  const pageH = naturalViewport.height;
 
-function computeInkDensityX(imageData, width, height) {
-  const { data } = imageData;
-  const trimTop = Math.floor(height * MARGIN_TRIM);
-  const trimBot = Math.floor(height * (1 - MARGIN_TRIM));
-  const span = trimBot - trimTop;
+  const textContent = await pdfPage.getTextContent();
+  const items = [];
 
-  const density = new Float32Array(width);
-  for (let x = 0; x < width; x++) {
-    let ink = 0;
-    for (let y = trimTop; y < trimBot; y++) {
-      const i = (y * width + x) * 4;
-      // Luminance — dark pixel = ink
-      const lum = (data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114) / 255;
-      if (lum < 0.5) ink++;
-    }
-    density[x] = ink / span;
-  }
-  return density;
-}
-
-// Find contiguous runs of low-density columns (gaps between text columns)
-function findGaps(smoothed, width) {
-  const gaps = [];
-  let gapStart = -1;
-
-  for (let x = 0; x < width; x++) {
-    if (smoothed[x] < VALLEY_THRESHOLD) {
-      if (gapStart === -1) gapStart = x;
-    } else {
-      if (gapStart !== -1) {
-        const gapWidth = x - gapStart;
-        if (gapWidth >= MIN_GAP_PX) {
-          gaps.push({ start: gapStart, end: x, mid: Math.round((gapStart + x) / 2) });
-        }
-        gapStart = -1;
-      }
-    }
-  }
-  if (gapStart !== -1 && (width - gapStart) >= MIN_GAP_PX) {
-    gaps.push({ start: gapStart, end: width, mid: Math.round((gapStart + width) / 2) });
-  }
-  return gaps;
-}
-
-// Compute the y-extent of a column (trim blank rows at top/bottom)
-function columnYExtent(imageData, width, height, colX, colW) {
-  const { data } = imageData;
-  let top = height, bottom = 0;
-
-  for (let y = 0; y < height; y++) {
-    for (let x = colX; x < colX + colW; x++) {
-      const i = (y * width + x) * 4;
-      const lum = (data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114) / 255;
-      if (lum < 0.5) {
-        if (y < top) top = y;
-        if (y > bottom) bottom = y;
-        break;
-      }
-    }
+  for (const item of textContent.items) {
+    if (!item.str?.trim()) continue;
+    const fontSize = Math.abs(item.transform[0]);
+    if (fontSize < 0.5) continue; // skip degenerate items
+    const x = item.transform[4];
+    const yBaseline = item.transform[5];
+    const w = item.width || fontSize * item.str.length * 0.5;
+    const h = item.height || fontSize;
+    items.push({
+      x,
+      y: pageH - yBaseline - h,  // flip to top-down
+      w,
+      h,
+      fontSize,
+      fontName: item.fontName,
+    });
   }
 
-  return top < bottom ? { top, bottom } : { top: 0, bottom: height };
-}
+  if (items.length === 0) return [];
 
-export function detectRegions(canvas) {
-  const { width, height } = canvas;
-  const ctx = canvas.getContext('2d');
-  const imageData = ctx.getImageData(0, 0, width, height);
+  const columns = findColumns(items, pageW);
+  const regions = columns
+    .filter(col => col.length >= MIN_ITEM_COUNT)
+    .map(col => buildRegion(col, pageW, pageH))
+    .filter(r => r.w * pageW >= MIN_COLUMN_WIDTH);
 
-  const density = computeInkDensityX(imageData, width, height);
-  const smoothed = movingAverage(density, SMOOTH_WINDOW);
-  const gaps = findGaps(smoothed, width);
+  if (regions.length === 0) return [];
 
-  // Build column x-ranges from gaps
-  const boundaries = [0, ...gaps.map(g => g.mid), width];
-  const columns = [];
-
-  for (let i = 0; i < boundaries.length - 1; i++) {
-    const x = boundaries[i];
-    const w = boundaries[i+1] - x;
-    if (w < 10) continue; // skip slivers
-
-    const { top, bottom } = columnYExtent(imageData, width, height, x, w);
-    columns.push({ px: { x, y: top, w, h: bottom - top } });
-  }
-
-  if (columns.length === 0) return [];
-
-  // Classify: widest column = gemara, others = commentary
-  const maxW = Math.max(...columns.map(c => c.px.w));
-
-  return columns.map(col => ({
-    x: col.px.x / width,
-    y: col.px.y / height,
-    w: col.px.w / width,
-    h: col.px.h / height,
-    type: col.px.w === maxW ? 'gemara' : 'commentary',
+  const maxFontSize = Math.max(...regions.map(r => r.fontSize));
+  return regions.map(r => ({
+    ...r,
+    type: r.fontSize >= maxFontSize * GEMARA_FONT_RATIO ? 'gemara' : 'commentary',
   }));
 }
 
-// Return the region that contains the given point (canvas-relative coords)
+function findColumns(items, pageW) {
+  // Build per-x-unit occupancy
+  const width = Math.ceil(pageW);
+  const occupancy = new Uint16Array(width);
+  for (const item of items) {
+    const start = Math.max(0, Math.floor(item.x));
+    const end = Math.min(width, Math.ceil(item.x + item.w));
+    for (let x = start; x < end; x++) occupancy[x]++;
+  }
+
+  // Find runs of nonzero occupancy, merging across small gaps
+  const runs = [];
+  let runStart = -1;
+  let lastNonZero = -1;
+  for (let x = 0; x < width; x++) {
+    if (occupancy[x] > 0) {
+      if (runStart === -1) runStart = x;
+      lastNonZero = x;
+    } else if (runStart !== -1 && x - lastNonZero > COLUMN_GAP_TOLERANCE) {
+      runs.push({ start: runStart, end: lastNonZero + 1 });
+      runStart = -1;
+    }
+  }
+  if (runStart !== -1) runs.push({ start: runStart, end: lastNonZero + 1 });
+
+  // Assign each item to the run containing its horizontal center
+  return runs.map(run =>
+    items.filter(item => {
+      const cx = item.x + item.w / 2;
+      return cx >= run.start && cx <= run.end;
+    })
+  );
+}
+
+function buildRegion(items, pageW, pageH) {
+  let xMin = Infinity, xMax = -Infinity;
+  let yMin = Infinity, yMax = -Infinity;
+  for (const i of items) {
+    if (i.x < xMin) xMin = i.x;
+    if (i.x + i.w > xMax) xMax = i.x + i.w;
+    if (i.y < yMin) yMin = i.y;
+    if (i.y + i.h > yMax) yMax = i.y + i.h;
+  }
+  const fontSizes = items.map(i => i.fontSize).sort((a, b) => a - b);
+  const fontSize = fontSizes[Math.floor(fontSizes.length / 2)]; // median
+
+  return {
+    x: xMin / pageW,
+    y: yMin / pageH,
+    w: (xMax - xMin) / pageW,
+    h: (yMax - yMin) / pageH,
+    fontSize,
+    itemCount: items.length,
+  };
+}
+
+// Find the region containing a point given in canvas-relative CSS coords
 export function regionAtPoint(regions, px, py, canvasCssW, canvasCssH) {
   const nx = px / canvasCssW;
   const ny = py / canvasCssH;
-
-  return regions.find(r =>
-    nx >= r.x && nx <= r.x + r.w &&
-    ny >= r.y && ny <= r.y + r.h
-  ) ?? null;
+  // Prefer the region with smallest area when nested (so taps on commentary
+  // inside the gemara's bounding box don't grab the gemara)
+  let best = null;
+  let bestArea = Infinity;
+  for (const r of regions) {
+    if (nx < r.x || nx > r.x + r.w) continue;
+    if (ny < r.y || ny > r.y + r.h) continue;
+    const area = r.w * r.h;
+    if (area < bestArea) { best = r; bestArea = area; }
+  }
+  return best;
 }

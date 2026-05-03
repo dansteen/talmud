@@ -68,6 +68,11 @@ html, body, #app {
   background: rgba(255, 200, 50, 0.06);
 }
 
+.region-reference {
+  border-color: rgba(150, 170, 255, 0.85);
+  background: rgba(150, 170, 255, 0.06);
+}
+
 .region-label {
   position: absolute;
   top: -1px;

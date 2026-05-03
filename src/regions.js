@@ -1,19 +1,26 @@
 // Detects column regions on a typeset Talmud page using PDF.js text content.
 //
-// We get exact glyph positions and font sizes from the PDF — far more reliable
-// than pixel analysis. Algorithm:
-//   1. Pull every text item with its position/width/font size.
-//   2. Build an x-axis occupancy map; horizontal gaps split columns.
-//   3. Group items into columns by which gap they fall between.
-//   4. Compute each column's bounding box and median font size.
-//   5. Classify regions: largest font sizes = gemara, smaller = commentary.
+// Three tiers based on font size:
+//   gemara     — largest font (main center text)
+//   commentary — medium font (Rashi, Tosafot)
+//   reference  — smallest font (Masoret HaShas, Ein Mishpat, etc.)
 //
-// All output coordinates are normalized [0..1] relative to the natural page size.
+// Algorithm:
+//   1. Pull every text item — keep only x/yBaseline/fontSize, ignore width.
+//   2. Bucket items by their start x and find empty-bucket gaps to split columns.
+//   3. For each column, estimate a bounding box from item positions + an inferred
+//      width based on string length and font size (PDF item widths are unreliable).
+//   4. Classify regions by font size into the three tiers.
+//
+// Output coordinates are normalized [0..1] relative to natural page size.
 
-const COLUMN_GAP_TOLERANCE = 8;   // PDF units — gaps narrower than this don't split
-const MIN_COLUMN_WIDTH = 15;      // PDF units — narrower runs are dropped
-const MIN_ITEM_COUNT = 2;         // single-glyph artifacts ignored
-const GEMARA_FONT_RATIO = 0.85;   // font size ≥ this fraction of max → gemara
+const X_BUCKET = 4;            // PDF units per column-detection bucket
+const MIN_GAP_BUCKETS = 4;     // empty buckets needed to split a column
+const MIN_COLUMN_ITEMS = 3;    // columns with fewer items are dropped
+
+const TIER_GEMARA = 0.80;      // fontSize / maxFontSize ≥ this → gemara
+const TIER_COMMENTARY = 0.55;  // ≥ this but below gemara → commentary
+                                // anything smaller → reference
 
 export async function detectRegions(pdfPage) {
   const naturalViewport = pdfPage.getViewport({ scale: 1 });
@@ -26,83 +33,92 @@ export async function detectRegions(pdfPage) {
   for (const item of textContent.items) {
     if (!item.str?.trim()) continue;
     const fontSize = Math.abs(item.transform[0]);
-    if (fontSize < 0.5) continue; // skip degenerate items
-    const x = item.transform[4];
-    const yBaseline = item.transform[5];
-    const w = item.width || fontSize * item.str.length * 0.5;
-    const h = item.height || fontSize;
+    if (fontSize < 1) continue;
+
     items.push({
-      x,
-      y: pageH - yBaseline - h,  // flip to top-down
-      w,
-      h,
+      x: item.transform[4],
+      yBaseline: item.transform[5],
+      str: item.str,
       fontSize,
       fontName: item.fontName,
+      dir: item.dir,
     });
   }
 
   if (items.length === 0) return [];
 
-  const columns = findColumns(items, pageW);
+  const columns = findColumnsByStartX(items, pageW);
   const regions = columns
-    .filter(col => col.length >= MIN_ITEM_COUNT)
-    .map(col => buildRegion(col, pageW, pageH))
-    .filter(r => r.w * pageW >= MIN_COLUMN_WIDTH);
+    .filter(col => col.length >= MIN_COLUMN_ITEMS)
+    .map(col => buildRegion(col, pageW, pageH));
 
-  if (regions.length === 0) return [];
-
-  const maxFontSize = Math.max(...regions.map(r => r.fontSize));
-  return regions.map(r => ({
-    ...r,
-    type: r.fontSize >= maxFontSize * GEMARA_FONT_RATIO ? 'gemara' : 'commentary',
-  }));
+  return classifyByTier(regions);
 }
 
-function findColumns(items, pageW) {
-  // Build per-x-unit occupancy
-  const width = Math.ceil(pageW);
-  const occupancy = new Uint16Array(width);
+function findColumnsByStartX(items, pageW) {
+  // Use only item start positions — text widths from PDF.js are unreliable
+  // and cause columns to overlap when used directly.
+  const numBuckets = Math.ceil(pageW / X_BUCKET);
+  const counts = new Uint16Array(numBuckets);
   for (const item of items) {
-    const start = Math.max(0, Math.floor(item.x));
-    const end = Math.min(width, Math.ceil(item.x + item.w));
-    for (let x = start; x < end; x++) occupancy[x]++;
+    const b = Math.floor(item.x / X_BUCKET);
+    if (b >= 0 && b < numBuckets) counts[b]++;
   }
 
-  // Find runs of nonzero occupancy, merging across small gaps
   const runs = [];
   let runStart = -1;
-  let lastNonZero = -1;
-  for (let x = 0; x < width; x++) {
-    if (occupancy[x] > 0) {
-      if (runStart === -1) runStart = x;
-      lastNonZero = x;
-    } else if (runStart !== -1 && x - lastNonZero > COLUMN_GAP_TOLERANCE) {
-      runs.push({ start: runStart, end: lastNonZero + 1 });
+  let lastNonEmpty = -1;
+  for (let i = 0; i < numBuckets; i++) {
+    if (counts[i] > 0) {
+      if (runStart === -1) runStart = i;
+      lastNonEmpty = i;
+    } else if (runStart !== -1 && i - lastNonEmpty >= MIN_GAP_BUCKETS) {
+      runs.push({ startX: runStart * X_BUCKET, endX: (lastNonEmpty + 1) * X_BUCKET });
       runStart = -1;
     }
   }
-  if (runStart !== -1) runs.push({ start: runStart, end: lastNonZero + 1 });
+  if (runStart !== -1) {
+    runs.push({ startX: runStart * X_BUCKET, endX: (lastNonEmpty + 1) * X_BUCKET });
+  }
 
-  // Assign each item to the run containing its horizontal center
   return runs.map(run =>
-    items.filter(item => {
-      const cx = item.x + item.w / 2;
-      return cx >= run.start && cx <= run.end;
-    })
+    items.filter(item => item.x >= run.startX && item.x < run.endX)
   );
 }
 
 function buildRegion(items, pageW, pageH) {
   let xMin = Infinity, xMax = -Infinity;
   let yMin = Infinity, yMax = -Infinity;
-  for (const i of items) {
-    if (i.x < xMin) xMin = i.x;
-    if (i.x + i.w > xMax) xMax = i.x + i.w;
-    if (i.y < yMin) yMin = i.y;
-    if (i.y + i.h > yMax) yMax = i.y + i.h;
+
+  for (const item of items) {
+    // Hebrew average character width is roughly 0.55 × font size
+    const itemW = item.str.length * item.fontSize * 0.55;
+    const itemH = item.fontSize * 1.1;
+
+    // For RTL (Hebrew), transform[4] is the right edge — text extends leftward
+    const isRTL = item.dir === 'rtl';
+    const left = isRTL ? item.x - itemW : item.x;
+    const right = isRTL ? item.x : item.x + itemW;
+
+    // PDF y is bottom-up; flip to top-down
+    const top = pageH - item.yBaseline - itemH;
+    const bottom = pageH - item.yBaseline;
+
+    if (left < xMin) xMin = left;
+    if (right > xMax) xMax = right;
+    if (top < yMin) yMin = top;
+    if (bottom > yMax) yMax = bottom;
   }
-  const fontSizes = items.map(i => i.fontSize).sort((a, b) => a - b);
-  const fontSize = fontSizes[Math.floor(fontSizes.length / 2)]; // median
+
+  // Clamp to page bounds — guards against outliers
+  xMin = Math.max(0, xMin);
+  yMin = Math.max(0, yMin);
+  xMax = Math.min(pageW, xMax);
+  yMax = Math.min(pageH, yMax);
+
+  // Median font size — robust to occasional outliers
+  const sizes = items.map(i => i.fontSize).sort((a, b) => a - b);
+  const fontSize = sizes[Math.floor(sizes.length / 2)];
 
   return {
     x: xMin / pageW,
@@ -114,12 +130,24 @@ function buildRegion(items, pageW, pageH) {
   };
 }
 
-// Find the region containing a point given in canvas-relative CSS coords
+function classifyByTier(regions) {
+  if (regions.length === 0) return [];
+  const maxSize = Math.max(...regions.map(r => r.fontSize));
+
+  return regions.map(r => {
+    const ratio = r.fontSize / maxSize;
+    let type;
+    if (ratio >= TIER_GEMARA) type = 'gemara';
+    else if (ratio >= TIER_COMMENTARY) type = 'commentary';
+    else type = 'reference';
+    return { ...r, type };
+  });
+}
+
+// Find the smallest region containing a point given in canvas-relative CSS coords
 export function regionAtPoint(regions, px, py, canvasCssW, canvasCssH) {
   const nx = px / canvasCssW;
   const ny = py / canvasCssH;
-  // Prefer the region with smallest area when nested (so taps on commentary
-  // inside the gemara's bounding box don't grab the gemara)
   let best = null;
   let bestArea = Infinity;
   for (const r of regions) {

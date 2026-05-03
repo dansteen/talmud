@@ -186,7 +186,7 @@ function drawOverlay(regions) {
         'outline:1px solid #ffff00;border-radius:50%;' +
         'margin:-2px 0 0 -2px;z-index:10;pointer-events:none;';
       dot.style.left = (item.x / pageW * 100) + '%';
-      dot.style.top = ((pageH - item.yBaseline) / pageH * 100) + '%';
+      dot.style.top = (item.yBaseline / pageH * 100) + '%';
       overlay.appendChild(dot);
     }
   }

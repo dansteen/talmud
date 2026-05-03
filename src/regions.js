@@ -1,32 +1,30 @@
 // Region detection for typeset Talmud pages using PDF.js text content.
 //
 // Strategy: split items into three font-size tiers (gemara / commentary /
-// reference) FIRST, then find columns within each tier independently. Items
-// from different tiers don't interfere with each other's column detection,
+// reference) FIRST, then find columns within each tier independently using
+// start-x histogram clustering. Items from different tiers don't interfere,
 // so the gaps between visual columns become visible.
 //
 // Algorithm:
-//   1. Pick a "reference" font size: the largest substantial size (the Gemara
-//      body text). Larger outliers like the Mishnah-opener decoration get
-//      bucketed with gemara, which is fine — they live in the same column.
-//   2. Sort items into three tiers by ratio to the reference size.
-//   3. For each tier, build x-axis occupancy using inferred widths and find
-//      runs separated by empty buckets.
-//   4. Each run is a column. Bounding box uses the column's x range and the
-//      items' y extents — never extends past the gap-detected boundaries.
-//
-// Output: regions in normalized [0..1] coords with a 'type' field.
+//   1. Convert all item positions from PDF coords to viewport (display) coords.
+//   2. Pick a "reference" font size: largest substantial size (the gemara body).
+//   3. Sort items into three tiers by ratio to the reference.
+//   4. For each tier, build a histogram of item *start-x* positions and find
+//      runs separated by enough empty buckets. Don't use inferred widths for
+//      occupancy — that bridges columns.
+//   5. For each cluster, the bounding box uses the actual extent of items
+//      (start-x to inferred-right), capped at the next within-tier column's
+//      start so it can't overflow.
 
-const X_BUCKET = 4;             // PDF units per occupancy bucket
-const MIN_GAP_BUCKETS = 3;      // 12 PDF units of empty space splits a column
-const MIN_COLUMN_ITEMS = 5;     // narrower columns are dropped
-const MIN_TIER_REF_ITEMS = 30;  // a font size needs this many items to be the gemara reference
+const X_BUCKET = 4;
+const MIN_GAP_BUCKETS = 3;
+const MIN_COLUMN_ITEMS = 5;
+const MIN_TIER_REF_ITEMS = 30;
 
-const TIER_GEMARA = 0.92;       // fontSize / refSize ≥ this → gemara
-const TIER_COMMENTARY = 0.65;   // ≥ this but < gemara → commentary
-                                 // anything smaller → reference
+const TIER_GEMARA = 0.92;
+const TIER_COMMENTARY = 0.65;
 
-const HEBREW_CHAR_WIDTH = 0.45; // average Hebrew glyph width as a fraction of font size
+const HEBREW_CHAR_WIDTH = 0.45;
 
 export const debugInfo = { items: null, pageW: 0, pageH: 0 };
 
@@ -36,7 +34,7 @@ export async function detectRegions(pdfPage) {
   const pageH = naturalViewport.height;
 
   const textContent = await pdfPage.getTextContent();
-  const items = extractItems(textContent.items);
+  const items = extractItems(textContent.items, naturalViewport);
 
   debugInfo.items = items;
   debugInfo.pageW = pageW;
@@ -48,10 +46,13 @@ export async function detectRegions(pdfPage) {
 
   const regions = [];
   for (const tier of tiers) {
-    const columns = findColumnsByOccupancy(tier.items, pageW);
-    for (const col of columns) {
-      if (col.items.length < MIN_COLUMN_ITEMS) continue;
-      const region = buildRegion(col, pageW, pageH);
+    const cols = findColumnsByStartX(tier.items, pageW);
+    cols.sort((a, b) => a.range.startX - b.range.startX);
+
+    for (let i = 0; i < cols.length; i++) {
+      if (cols[i].items.length < MIN_COLUMN_ITEMS) continue;
+      const nextStart = cols[i + 1]?.range.startX ?? pageW;
+      const region = buildRegion(cols[i], pageW, pageH, nextStart);
       region.type = tier.type;
       regions.push(region);
     }
@@ -61,15 +62,23 @@ export async function detectRegions(pdfPage) {
   return regions;
 }
 
-function extractItems(rawItems) {
+function extractItems(rawItems, viewport) {
   const items = [];
   for (const item of rawItems) {
     if (!item.str?.trim()) continue;
     const fontSize = Math.abs(item.transform[0]);
     if (fontSize < 1) continue;
+
+    // Convert from PDF user space to viewport (top-down) coordinates.
+    // Handles non-zero MediaBox origins, rotations, etc.
+    const [vx, vy] = viewport.convertToViewportPoint(
+      item.transform[4],
+      item.transform[5]
+    );
+
     items.push({
-      x: item.transform[4],
-      yBaseline: item.transform[5],
+      x: vx,
+      yBaseline: vy,  // top-down viewport coords
       str: item.str,
       fontSize,
       fontName: item.fontName,
@@ -79,9 +88,6 @@ function extractItems(rawItems) {
   return items;
 }
 
-// Split items into three tiers by font size, anchored to the largest font
-// size that has substantial item count (avoids letting Mishnah-opener
-// outliers skew the threshold).
 function splitByFontTier(items) {
   const sizeCount = new Map();
   for (const item of items) {
@@ -114,25 +120,23 @@ function splitByFontTier(items) {
   return tiers;
 }
 
-function findColumnsByOccupancy(items, pageW) {
+// Cluster items by start-x only. Inferred widths can bridge columns, so we
+// keep occupancy point-based: each item contributes to one bucket.
+function findColumnsByStartX(items, pageW) {
   if (items.length === 0) return [];
 
   const numBuckets = Math.ceil(pageW / X_BUCKET);
-  const occupancy = new Uint16Array(numBuckets);
-
+  const counts = new Uint16Array(numBuckets);
   for (const item of items) {
-    const itemW = item.str.length * item.fontSize * HEBREW_CHAR_WIDTH;
-    const start = Math.max(0, Math.floor(item.x / X_BUCKET));
-    const end = Math.min(numBuckets, Math.ceil((item.x + itemW) / X_BUCKET));
-    for (let i = start; i < end; i++) occupancy[i]++;
+    const b = Math.floor(item.x / X_BUCKET);
+    if (b >= 0 && b < numBuckets) counts[b]++;
   }
 
-  // Find runs separated by MIN_GAP_BUCKETS empty buckets in a row
   const runs = [];
   let runStart = -1;
   let lastNonEmpty = -1;
   for (let i = 0; i < numBuckets; i++) {
-    if (occupancy[i] > 0) {
+    if (counts[i] > 0) {
       if (runStart === -1) runStart = i;
       lastNonEmpty = i;
     } else if (runStart !== -1 && i - lastNonEmpty >= MIN_GAP_BUCKETS) {
@@ -146,28 +150,37 @@ function findColumnsByOccupancy(items, pageW) {
 
   return runs.map(run => ({
     range: run,
-    items: items.filter(item => {
-      const itemW = item.str.length * item.fontSize * HEBREW_CHAR_WIDTH;
-      const itemMid = item.x + itemW / 2;
-      return itemMid >= run.startX && itemMid <= run.endX;
-    }),
+    items: items.filter(item => item.x >= run.startX && item.x < run.endX),
   }));
 }
 
-function buildRegion(col, pageW, pageH) {
-  const { range, items } = col;
+function buildRegion(col, pageW, pageH, nextColumnStart) {
+  const { items } = col;
 
+  let xMin = Infinity, xMax = -Infinity;
   let yMin = Infinity, yMax = -Infinity;
+
   for (const item of items) {
-    const itemH = item.fontSize * 1.1;
-    const top = pageH - item.yBaseline - itemH;
-    const bottom = pageH - item.yBaseline;
+    const itemW = item.str.length * item.fontSize * HEBREW_CHAR_WIDTH;
+    const left = item.x;
+    const right = item.x + itemW;
+    // Viewport coords: yBaseline is top-down. Text top sits above baseline by
+    // ~font height; descent is small.
+    const top = item.yBaseline - item.fontSize;
+    const bottom = item.yBaseline + item.fontSize * 0.25;
+
+    if (left < xMin) xMin = left;
+    if (right > xMax) xMax = right;
     if (top < yMin) yMin = top;
     if (bottom > yMax) yMax = bottom;
   }
 
-  const xMin = Math.max(0, range.startX);
-  const xMax = Math.min(pageW, range.endX);
+  // Cap the right edge at the start of the next column in this tier so the
+  // bbox can't bleed into a neighboring column.
+  xMax = Math.min(xMax, nextColumnStart - X_BUCKET);
+
+  xMin = Math.max(0, xMin);
+  xMax = Math.min(pageW, xMax);
   yMin = Math.max(0, yMin);
   yMax = Math.min(pageH, yMax);
 
@@ -195,8 +208,6 @@ function logDiagnostic(items, pageW, pageH, regions, tiers) {
 }
 
 // Find the smallest region containing a point given in canvas-relative CSS coords.
-// Smallest-area wins so a tap inside a commentary gets the commentary, not the
-// surrounding gemara if they happen to overlap.
 export function regionAtPoint(regions, px, py, canvasCssW, canvasCssH) {
   const nx = px / canvasCssW;
   const ny = py / canvasCssH;

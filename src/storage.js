@@ -3,7 +3,7 @@
 
 const PREFS_KEY = 'talmud:zoom_prefs';
 const LAST_LOC_KEY = 'talmud:last_location';
-const REGION_CACHE_KEY = 'talmud:regions:v5';
+const REGION_CACHE_KEY = 'talmud:regions:v6';
 
 function loadPrefs() {
   try { return JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); }

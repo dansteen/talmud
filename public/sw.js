@@ -1,12 +1,12 @@
 const CACHE = 'talmud-pdfs-v1';
-const SHAS_ORIGIN = 'https://www.shas.org';
+const SHAS_PATH = '/shas-api/';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 
 self.addEventListener('fetch', event => {
-  const { url } = event.request;
-  if (url.startsWith(SHAS_ORIGIN)) {
+  const url = new URL(event.request.url);
+  if (url.pathname.startsWith(SHAS_PATH)) {
     event.respondWith(cacheFirst(event.request));
   }
   // All other requests go straight to network (app shell is versioned by Vite)

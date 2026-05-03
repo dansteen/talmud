@@ -5,6 +5,14 @@
 [build.environment]
   NODE_VERSION = "20"
 
+# Proxy shas.org API through our origin to bypass missing CORS headers.
+# Must come before the SPA fallback.
+[[redirects]]
+  from = "/shas-api/*"
+  to = "https://www.shas.org/daf-pdf/api/:splat"
+  status = 200
+  force = true
+
 # SPA fallback — all routes serve the app shell
 [[redirects]]
   from = "/*"

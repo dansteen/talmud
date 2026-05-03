@@ -105,5 +105,5 @@ export function locationLabel(tractate, daf, amud) {
 }
 
 export function apiUrl(tractate, daf, amud) {
-  return `https://www.shas.org/daf-pdf/api/?masechta=${tractate.slug}&daf=${daf}&amud=${amud}`;
+  return `/shas-api/?masechta=${tractate.slug}&daf=${daf}&amud=${amud}`;
 }

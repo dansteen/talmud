@@ -1,28 +1,32 @@
 // Region detection for typeset Talmud pages using PDF.js text content.
 //
-// The challenge: commentaries (Rashi/Tosafot) frequently quote the Gemara
-// inline, using a different — often bold — variant of the gemara font. Those
-// quote items have a 'gemara' font size but live spatially in commentary
-// columns. If we cluster naively, the quotes scatter the gemara tier across
-// commentary territory; if we merge to fix that, the merge cascades.
-//
-// Solution: separate "primary" items (the dominant font at each font size,
-// i.e. the regular weight) from "secondary" items (less-common fonts at the
-// same size, i.e. bolds/italics like Gemara quotes). Only primary items
-// vote in column-boundary detection. Secondary items still count for
-// y-bounds and tier classification, so a column with a bold quote still
-// extends tall enough to cover it.
-//
-// Then classify each detected column by which tier (gemara / commentary /
-// reference) contributes the most items to it.
+// The pipeline:
+//   1. Extract items, convert PDF coords to viewport coords.
+//   2. Tag each item by tier (gemara / commentary / reference) based on font
+//      size relative to the dominant body-text size.
+//   3. Tag each item primary or secondary by fontName frequency at its size.
+//      The most common fontName at each size is the regular weight; others
+//      are likely bold/italic variants like Gemara quotes inside commentary.
+//   4. Per tier, cluster columns:
+//      - Use only primary items within the body y-range to avoid the page
+//        header (top) and footnotes (bottom) — those span the page width and
+//        would close every gap in the histogram.
+//      - Histogram start-x positions, find runs separated by empty buckets.
+//      - Merge adjacent runs separated by less than SAME_TIER_MERGE_GAP to
+//        handle within-column sub-clusters (indented lines, dropcaps, etc.).
+//   5. Bounding box uses items in the body y-range so a margin column doesn't
+//      stretch down into the footnote area.
 
 const X_BUCKET = 4;
 const MIN_GAP_BUCKETS = 3;
 const MIN_COLUMN_ITEMS = 5;
+const SAME_TIER_MERGE_GAP = 30; // PDF units
 const MIN_TIER_REF_ITEMS = 30;
 const TIER_GEMARA = 0.92;
 const TIER_COMMENTARY = 0.65;
 const HEBREW_CHAR_WIDTH = 0.45;
+const Y_BODY_TOP = 0.05;
+const Y_BODY_BOTTOM = 0.85;
 
 export const debugInfo = { items: null, pageW: 0, pageH: 0 };
 
@@ -43,16 +47,22 @@ export async function detectRegions(pdfPage) {
   tagTier(items);
   tagPrimary(items);
 
-  const cols = findColumnsByStartX(items, pageW);
-  cols.sort((a, b) => a.range.startX - b.range.startX);
-
   const regions = [];
-  for (let i = 0; i < cols.length; i++) {
-    if (cols[i].items.length < MIN_COLUMN_ITEMS) continue;
-    const nextStart = cols[i + 1]?.range.startX ?? pageW;
-    const region = buildRegion(cols[i], pageW, pageH, nextStart);
-    region.type = dominantTier(cols[i].items);
-    regions.push(region);
+  for (const tierType of ['gemara', 'commentary', 'reference']) {
+    const tierItems = items.filter(i => i._tier === tierType);
+    if (tierItems.length < MIN_COLUMN_ITEMS) continue;
+
+    let cols = findColumnsByStartX(tierItems, pageW, pageH);
+    cols = mergeAdjacent(cols, SAME_TIER_MERGE_GAP);
+    cols.sort((a, b) => a.range.startX - b.range.startX);
+
+    for (let i = 0; i < cols.length; i++) {
+      if (cols[i].items.length < MIN_COLUMN_ITEMS) continue;
+      const nextStart = cols[i + 1]?.range.startX ?? pageW;
+      const region = buildRegion(cols[i], pageW, pageH, nextStart);
+      region.type = tierType;
+      regions.push(region);
+    }
   }
 
   logDiagnostic(items, pageW, pageH, regions);
@@ -111,9 +121,6 @@ function tagTier(items) {
   }
 }
 
-// Mark items using a non-dominant fontName at their font size as secondary.
-// This isolates likely bold variants (used for Gemara quotes within commentary)
-// so they don't shift x-column boundaries.
 function tagPrimary(items) {
   const sizeFontCounts = new Map();
   for (const item of items) {
@@ -138,13 +145,22 @@ function tagPrimary(items) {
   }
 }
 
-function findColumnsByStartX(items, pageW) {
+function findColumnsByStartX(items, pageW, pageH) {
   if (items.length === 0) return [];
 
-  // Build histogram from primary items only — secondary items (bold quotes)
-  // don't contribute to column boundary detection.
-  const primary = items.filter(i => i._isPrimary);
-  const clusterItems = primary.length >= 10 ? primary : items;
+  // Cluster only on items that are (a) primary at their font size and
+  // (b) within the body y-range. Page headers and footnotes span page-wide
+  // and would close every histogram gap.
+  const yMin = pageH * Y_BODY_TOP;
+  const yMax = pageH * Y_BODY_BOTTOM;
+  const inBody = items.filter(i =>
+    i.yBaseline >= yMin && i.yBaseline <= yMax
+  );
+  const primary = inBody.filter(i => i._isPrimary);
+  const clusterItems =
+    primary.length >= 5 ? primary
+    : inBody.length >= 5 ? inBody
+    : items;
 
   const numBuckets = Math.ceil(pageW / X_BUCKET);
   const counts = new Uint16Array(numBuckets);
@@ -168,37 +184,50 @@ function findColumnsByStartX(items, pageW) {
     runs.push({ startX: runStart * X_BUCKET, endX: (lastNonEmpty + 1) * X_BUCKET });
   }
 
-  // Assign ALL items to clusters by x-range — secondary items (bolds, quotes)
-  // come along for the ride so they'll affect y-bounds and tier classification.
+  // Assign every tier item whose x-position falls inside the run, regardless
+  // of whether it was used in clustering.
   return runs.map(run => ({
     range: { ...run },
     items: items.filter(item => item.x >= run.startX && item.x < run.endX),
   }));
 }
 
-function dominantTier(items) {
-  const counts = { gemara: 0, commentary: 0, reference: 0 };
-  for (const item of items) counts[item._tier]++;
-  if (counts.gemara >= counts.commentary && counts.gemara >= counts.reference) return 'gemara';
-  if (counts.commentary >= counts.reference) return 'commentary';
-  return 'reference';
+function mergeAdjacent(cols, maxGap) {
+  if (cols.length === 0) return [];
+  const sorted = [...cols].sort((a, b) => a.range.startX - b.range.startX);
+  const merged = [{ range: { ...sorted[0].range }, items: [...sorted[0].items] }];
+  for (let i = 1; i < sorted.length; i++) {
+    const cur = sorted[i];
+    const last = merged[merged.length - 1];
+    if (cur.range.startX - last.range.endX < maxGap) {
+      last.range.endX = Math.max(last.range.endX, cur.range.endX);
+      last.items.push(...cur.items);
+    } else {
+      merged.push({ range: { ...cur.range }, items: [...cur.items] });
+    }
+  }
+  return merged;
 }
 
 function buildRegion(col, pageW, pageH, nextColumnStart) {
   const { items } = col;
+  const yBodyMin = pageH * Y_BODY_TOP;
+  const yBodyMax = pageH * Y_BODY_BOTTOM;
 
   let xMin = Infinity, xMax = -Infinity;
   let yMin = Infinity, yMax = -Infinity;
   let primaryCount = 0;
 
   for (const item of items) {
-    // Y always extends — bold quotes within a column extend its vertical reach
+    // Bounding box only counts items within the body y-range so a margin
+    // column doesn't stretch down to capture footnote text at the same x.
+    if (item.yBaseline < yBodyMin || item.yBaseline > yBodyMax) continue;
+
     const top = item.yBaseline - item.fontSize;
     const bottom = item.yBaseline + item.fontSize * 0.25;
     if (top < yMin) yMin = top;
     if (bottom > yMax) yMax = bottom;
 
-    // X only extends from primary items (ignore bold quotes that may stick out)
     if (item._isPrimary) {
       primaryCount++;
       const itemW = item.str.length * item.fontSize * HEBREW_CHAR_WIDTH;
@@ -207,12 +236,16 @@ function buildRegion(col, pageW, pageH, nextColumnStart) {
     }
   }
 
-  // If somehow no primary items (shouldn't happen), fall back to all items
   if (primaryCount === 0) {
+    // Fallback: use all items if no primary fell inside body y range
     for (const item of items) {
       const itemW = item.str.length * item.fontSize * HEBREW_CHAR_WIDTH;
       if (item.x < xMin) xMin = item.x;
       if (item.x + itemW > xMax) xMax = item.x + itemW;
+      const top = item.yBaseline - item.fontSize;
+      const bottom = item.yBaseline + item.fontSize * 0.25;
+      if (top < yMin) yMin = top;
+      if (bottom > yMax) yMax = bottom;
     }
   }
 
@@ -244,7 +277,6 @@ function logDiagnostic(items, pageW, pageH, regions) {
     tierCounts[item._tier]++;
     if (item._isPrimary) primary++;
   }
-
   console.log(
     `[regions] ${items.length} items (${primary} primary) → ${regions.length} regions, page ${pageW.toFixed(0)}×${pageH.toFixed(0)}`
   );

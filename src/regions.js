@@ -28,6 +28,7 @@ const HEBREW_CHAR_WIDTH = 0.45;
 const Y_BODY_TOP = 0.05;
 const Y_BODY_BOTTOM = 0.85;
 const MIN_REF_STR_LENGTH = 2;  // single-char references are usually inline footnote markers
+const MAX_ITEM_WIDTH_RATIO = 0.30;  // items wider than this are likely page-spanning footnote lines
 
 export const debugInfo = { items: null, pageW: 0, pageH: 0 };
 
@@ -181,6 +182,14 @@ function findColumnsByStartX(items, pageW, pageH, tierType) {
     primary = primary.filter(i => i.str.trim().length >= MIN_REF_STR_LENGTH);
   }
 
+  // Drop anomalously wide items (page-spanning footnote/header lines) from
+  // clustering. They start at x≈page-left and have wide widths, which fills
+  // every histogram bucket and prevents margin columns from separating.
+  primary = primary.filter(i => {
+    const w = i.width > 0 ? i.width : i.str.length * i.fontSize * HEBREW_CHAR_WIDTH;
+    return w <= pageW * MAX_ITEM_WIDTH_RATIO;
+  });
+
   const clusterItems =
     primary.length >= 5 ? primary
     : inBody.length >= 5 ? inBody
@@ -247,6 +256,10 @@ function buildRegion(col, pageW, pageH, nextColumnStart) {
     // column doesn't stretch down to capture footnote text at the same x.
     if (item.yBaseline < yBodyMin || item.yBaseline > yBodyMax) continue;
 
+    const itemW = item.width > 0 ? item.width : item.str.length * item.fontSize * HEBREW_CHAR_WIDTH;
+    // Skip page-spanning lines that would inflate the bbox horizontally
+    if (itemW > pageW * MAX_ITEM_WIDTH_RATIO) continue;
+
     const top = item.yBaseline - item.fontSize;
     const bottom = item.yBaseline + item.fontSize * 0.25;
     if (top < yMin) yMin = top;
@@ -254,7 +267,6 @@ function buildRegion(col, pageW, pageH, nextColumnStart) {
 
     if (item._isPrimary) {
       primaryCount++;
-      const itemW = item.width > 0 ? item.width : item.str.length * item.fontSize * HEBREW_CHAR_WIDTH;
       if (item.x < xMin) xMin = item.x;
       if (item.x + itemW > xMax) xMax = item.x + itemW;
     }

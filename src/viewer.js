@@ -1,6 +1,6 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { detectRegions } from './regions.js';
+import { detectRegions, debugInfo } from './regions.js';
 import { getCachedRegions, setCachedRegions } from './storage.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -173,6 +173,18 @@ function drawOverlay(regions) {
     box.appendChild(label);
 
     overlay.appendChild(box);
+  }
+
+  // Diagnostic dots: show every text item's start position
+  if (DEBUG_REGIONS && debugInfo.items) {
+    const { items, pageW, pageH } = debugInfo;
+    for (const item of items) {
+      const dot = document.createElement('div');
+      dot.className = 'item-dot';
+      dot.style.left = (item.x / pageW * 100) + '%';
+      dot.style.top = ((pageH - item.yBaseline) / pageH * 100) + '%';
+      overlay.appendChild(dot);
+    }
   }
 }
 

@@ -15,6 +15,27 @@ export function initNav(navigateCallback, homeCallback) {
   buildTractateList();
   bindButtons();
   bindDafPicker();
+  bindKeyboard();
+}
+
+// RTL convention: pressing left-arrow turns the page leftward = forward.
+function bindKeyboard() {
+  window.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = getTractate(state.slug);
+    if (!t) return;
+
+    if (e.key === 'ArrowLeft') {
+      const next = nextAmud(t, state.daf, state.amud);
+      if (next) navigate(state.slug, next.daf, next.amud);
+      e.preventDefault();
+    } else if (e.key === 'ArrowRight') {
+      const prev = prevAmud(t, state.daf, state.amud);
+      if (prev) navigate(state.slug, prev.daf, prev.amud);
+      e.preventDefault();
+    }
+  });
 }
 
 export function setLocation(slug, daf, amud) {

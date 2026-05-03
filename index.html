@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#1a1208" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="stylesheet" href="/src/style.css" />
+  <title>תלמוד</title>
+</head>
+<body>
+  <div id="app">
+
+    <!-- Page viewer -->
+    <div id="viewer">
+      <canvas id="page-canvas"></canvas>
+    </div>
+
+    <!-- Loading spinner -->
+    <div id="loading" class="hidden">
+      <div class="spinner"></div>
+    </div>
+
+    <!-- Navigation chrome (toggled by single tap) -->
+    <div id="nav-chrome" class="hidden">
+      <div id="nav-top">
+        <button id="nav-menu-btn" class="icon-btn" aria-label="Choose tractate">☰</button>
+        <span id="current-location"></span>
+      </div>
+      <div id="nav-bottom">
+        <button id="prev-btn" class="icon-btn" aria-label="Previous daf">◁</button>
+        <button id="home-btn" class="icon-btn" aria-label="Fit page">⊡</button>
+        <button id="next-btn" class="icon-btn" aria-label="Next daf">▷</button>
+      </div>
+    </div>
+
+    <!-- Navigation drawer (tractate + daf picker) -->
+    <div id="nav-overlay" class="hidden"></div>
+    <div id="nav-drawer" class="hidden">
+      <div id="nav-drawer-header">
+        <span id="nav-drawer-title">בחר מסכת</span>
+        <button id="nav-close-btn" class="icon-btn">✕</button>
+      </div>
+      <div id="tractate-list"></div>
+      <div id="daf-picker" class="hidden">
+        <button id="daf-back-btn" class="icon-btn">‹ חזרה</button>
+        <span id="daf-picker-tractate"></span>
+        <div id="daf-controls">
+          <input type="number" id="daf-input" min="2" />
+          <div id="amud-toggle">
+            <button id="amud-a-btn" class="amud-btn active">א</button>
+            <button id="amud-b-btn" class="amud-btn">ב</button>
+          </div>
+          <button id="go-btn">עבור</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Region detection pending indicator -->
+    <div id="region-pending" class="hidden">⋯</div>
+
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "name": "תלמוד",
+  "short_name": "תלמוד",
+  "description": "Talmud study viewer",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1a1208",
+  "theme_color": "#1a1208",
+  "icons": []
+}

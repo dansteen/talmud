@@ -64,7 +64,7 @@ export async function detectRegions(pdfPage) {
 
   const classified = classifyByTier(regions);
 
-  if (DEBUG) logDiagnostic(items, pageW, pageH, classified);
+  logDiagnostic(items, pageW, pageH, classified);
 
   return classified;
 }
@@ -79,29 +79,31 @@ function logDiagnostic(items, pageW, pageH, regions) {
   }
 
   const dirs = {};
+  const fonts = {};
   for (const item of items) {
     dirs[item.dir || '?'] = (dirs[item.dir || '?'] || 0) + 1;
+    const k = `${item.fontName} (fs ${item.fontSize.toFixed(1)})`;
+    fonts[k] = (fonts[k] || 0) + 1;
   }
 
   const peak = Math.max(...histo, 1);
 
-  console.group(`detectRegions: ${items.length} items, ${regions.length} regions`);
-  console.log(`page: ${pageW.toFixed(0)} × ${pageH.toFixed(0)}`);
-  console.log('directions:', dirs);
-  console.log('first items:', items.slice(0, 8).map(i => ({
+  console.log(`[regions] ${items.length} items → ${regions.length} regions, page ${pageW.toFixed(0)}×${pageH.toFixed(0)}`);
+  console.log('[regions] directions:', dirs);
+  console.log('[regions] fonts:', fonts);
+  console.log('[regions] first items:', items.slice(0, 12).map(i => ({
     x: +i.x.toFixed(1), y: +i.yBaseline.toFixed(1),
-    fs: +i.fontSize.toFixed(1), s: i.str, d: i.dir,
+    fs: +i.fontSize.toFixed(1), s: i.str, d: i.dir, fn: i.fontName,
   })));
   console.log(
-    'x histogram (60 buckets):\n' +
+    '[regions] x histogram (60 buckets):\n' +
     histo.map((c, i) => {
       const x = (i * bucketSize).toFixed(0).padStart(5);
       const bar = '█'.repeat(Math.ceil((c / peak) * 40));
       return `${x} | ${bar} (${c})`;
     }).join('\n')
   );
-  console.log('regions:', regions);
-  console.groupEnd();
+  console.log('[regions] detected:', regions);
 }
 
 function findColumnsByStartX(items, pageW) {

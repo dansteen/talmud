@@ -178,9 +178,13 @@ function drawOverlay(regions) {
   // Diagnostic dots: show every text item's start position
   if (DEBUG_REGIONS && debugInfo.items) {
     const { items, pageW, pageH } = debugInfo;
+    console.log(`[viewer] drawing ${items.length} item dots`);
     for (const item of items) {
       const dot = document.createElement('div');
-      dot.className = 'item-dot';
+      dot.style.cssText =
+        'position:absolute;width:4px;height:4px;background:#ff0040;' +
+        'outline:1px solid #ffff00;border-radius:50%;' +
+        'margin:-2px 0 0 -2px;z-index:10;pointer-events:none;';
       dot.style.left = (item.x / pageW * 100) + '%';
       dot.style.top = ((pageH - item.yBaseline) / pageH * 100) + '%';
       overlay.appendChild(dot);

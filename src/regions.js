@@ -19,7 +19,7 @@
 
 const X_BUCKET = 4;
 const MIN_GAP_BUCKETS = 3;
-const MIN_COLUMN_ITEMS = 5;
+const MIN_COLUMN_ITEMS = 8;
 const SAME_TIER_MERGE_GAP = 30; // PDF units
 const MIN_TIER_REF_ITEMS = 30;
 const TIER_GEMARA = 0.92;
@@ -27,6 +27,7 @@ const TIER_COMMENTARY = 0.65;
 const HEBREW_CHAR_WIDTH = 0.45;
 const Y_BODY_TOP = 0.05;
 const Y_BODY_BOTTOM = 0.85;
+const MIN_REF_STR_LENGTH = 2;  // single-char references are usually inline footnote markers
 
 export const debugInfo = { items: null, pageW: 0, pageH: 0 };
 
@@ -52,7 +53,7 @@ export async function detectRegions(pdfPage) {
     const tierItems = items.filter(i => i._tier === tierType);
     if (tierItems.length < MIN_COLUMN_ITEMS) continue;
 
-    let cols = findColumnsByStartX(tierItems, pageW, pageH);
+    let cols = findColumnsByStartX(tierItems, pageW, pageH, tierType);
     cols = mergeAdjacent(cols, SAME_TIER_MERGE_GAP);
     cols.sort((a, b) => a.range.startX - b.range.startX);
 
@@ -81,9 +82,22 @@ function extractItems(rawItems, viewport) {
       item.transform[5]
     );
 
+    // Convert width into viewport space too. PDF.js gives item.width in user
+    // space; at viewport scale=1 it's the same, but we go through the viewport
+    // transform anyway to be safe.
+    let width = 0;
+    if (item.width > 0) {
+      const [vx2] = viewport.convertToViewportPoint(
+        item.transform[4] + item.width,
+        item.transform[5]
+      );
+      width = Math.abs(vx2 - vx);
+    }
+
     items.push({
       x: vx,
       yBaseline: vy,
+      width,
       str: item.str,
       fontSize,
       fontName: item.fontName,
@@ -145,7 +159,7 @@ function tagPrimary(items) {
   }
 }
 
-function findColumnsByStartX(items, pageW, pageH) {
+function findColumnsByStartX(items, pageW, pageH, tierType) {
   if (items.length === 0) return [];
 
   // Cluster only on items that are (a) primary at their font size and
@@ -156,7 +170,17 @@ function findColumnsByStartX(items, pageW, pageH) {
   const inBody = items.filter(i =>
     i.yBaseline >= yMin && i.yBaseline <= yMax
   );
-  const primary = inBody.filter(i => i._isPrimary);
+  let primary = inBody.filter(i => i._isPrimary);
+
+  // Reference tier includes inline footnote markers (often single Hebrew
+  // letters) scattered through Rashi/Tosafot. They fill the histogram
+  // between the left and right margins, hiding the real gap. Drop them
+  // for clustering — they'll still be assigned to whichever cluster their
+  // x-position lands in.
+  if (tierType === 'reference') {
+    primary = primary.filter(i => i.str.trim().length >= MIN_REF_STR_LENGTH);
+  }
+
   const clusterItems =
     primary.length >= 5 ? primary
     : inBody.length >= 5 ? inBody
@@ -230,7 +254,7 @@ function buildRegion(col, pageW, pageH, nextColumnStart) {
 
     if (item._isPrimary) {
       primaryCount++;
-      const itemW = item.str.length * item.fontSize * HEBREW_CHAR_WIDTH;
+      const itemW = item.width > 0 ? item.width : item.str.length * item.fontSize * HEBREW_CHAR_WIDTH;
       if (item.x < xMin) xMin = item.x;
       if (item.x + itemW > xMax) xMax = item.x + itemW;
     }
@@ -239,7 +263,7 @@ function buildRegion(col, pageW, pageH, nextColumnStart) {
   if (primaryCount === 0) {
     // Fallback: use all items if no primary fell inside body y range
     for (const item of items) {
-      const itemW = item.str.length * item.fontSize * HEBREW_CHAR_WIDTH;
+      const itemW = item.width > 0 ? item.width : item.str.length * item.fontSize * HEBREW_CHAR_WIDTH;
       if (item.x < xMin) xMin = item.x;
       if (item.x + itemW > xMax) xMax = item.x + itemW;
       const top = item.yBaseline - item.fontSize;

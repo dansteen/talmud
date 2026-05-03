@@ -156,7 +156,7 @@ async function detectRegionsForPage(pdfPage, slug, daf, amud, onReady) {
   }
 
   await new Promise(r => setTimeout(r, 50));
-  const detected = await detectRegions(pdfPage);
+  const detected = await detectRegions(canvas, pdfPage);
   if (!DEBUG_REGIONS) setCachedRegions(slug, daf, amud, detected);
   finish(detected);
 }

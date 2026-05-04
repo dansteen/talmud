@@ -43,13 +43,21 @@ async function loadAt(slug, daf, amud) {
   pushUrlLocation(slug, c.daf, c.amud);
   setLastLocation(slug, c.daf, c.amud);
 
-  loading.classList.remove('hidden');
+  // Only show the loading spinner if the load takes longer than a brief
+  // threshold. Cache hits typically finish in well under this window, which
+  // avoids the flicker of seeing the spinner appear and immediately disappear.
+  const SPINNER_DELAY_MS = 250;
+  const spinnerTimer = setTimeout(() => {
+    loading.classList.remove('hidden');
+  }, SPINNER_DELAY_MS);
+
   try {
     const url = apiUrl(t, c.daf, c.amud);
     await loadPage(url, slug, c.daf, c.amud, () => {});
   } catch (err) {
     console.error('Failed to load page:', err);
   } finally {
+    clearTimeout(spinnerTimer);
     loading.classList.add('hidden');
   }
 

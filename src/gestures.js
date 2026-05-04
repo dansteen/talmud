@@ -245,4 +245,50 @@ export function initGestures({ prev, next } = {}) {
   // event on some browsers (Android Chrome historically had this behavior),
   // which would prevent the canvas's pointerdown handler from firing at all
   // — manifesting as gestures intermittently or never being detected.
+
+  // Diagnostic mode: ?debugGestures=1 in the URL adds an on-screen indicator
+  // that flashes color-coded dots for every touch / pointer event the canvas
+  // receives, so we can see whether events are reaching JS at all.
+  if (new URLSearchParams(location.search).has('debugGestures')) {
+    enableGestureDebug();
+  }
+}
+
+function enableGestureDebug() {
+  const log = document.createElement('div');
+  log.id = 'gesture-debug';
+  log.style.cssText = `
+    position: fixed; top: 8px; left: 8px; z-index: 9999;
+    pointer-events: none; font: 11px ui-monospace, monospace;
+    color: white; background: rgba(0,0,0,0.7);
+    padding: 4px 8px; border-radius: 4px;
+    max-width: 90vw; word-break: break-all;
+  `;
+  log.textContent = 'gesture-debug ready';
+  document.body.appendChild(log);
+
+  let n = 0;
+  const note = (label, color) => {
+    n++;
+    log.textContent = `${n}: ${label}`;
+    log.style.borderLeft = `4px solid ${color}`;
+  };
+
+  canvas.addEventListener('pointerdown', e => note(
+    `pointerdown #${pointers.size + 1} type=${e.pointerType} w=${e.width|0} h=${e.height|0}`, '#0f0'
+  ));
+  canvas.addEventListener('pointerup', () => note(`pointerup, count=${pointers.size}`, '#0f0'));
+  canvas.addEventListener('touchstart', e => note(
+    `touchstart fingers=${e.touches.length}`, '#0af'
+  ), { passive: true });
+  canvas.addEventListener('touchend', e => note(
+    `touchend fingers=${e.touches.length}`, '#0af'
+  ), { passive: true });
+
+  // Also catch events that bubble up to body, in case canvas isn't getting them
+  document.body.addEventListener('touchstart', e => {
+    if (e.target !== canvas) {
+      note(`touchstart on ${e.target?.id || e.target?.tagName}`, '#fa0');
+    }
+  }, { passive: true, capture: true });
 }

@@ -236,17 +236,18 @@ export function initGestures({ prev, next } = {}) {
   canvas.addEventListener('pointerup', onPointerUp, { passive: false });
   canvas.addEventListener('pointercancel', onPointerUp, { passive: false });
 
-  // Always preventDefault touchmove on canvas-area touches. This is the key
-  // to keeping pointer events flowing for multi-touch on Android Chrome:
-  // without it, the browser commits to a native pinch gesture on the first
-  // multi-finger touchmove and stops delivering pointer events to JS for the
-  // rest of that gesture (manifesting as ~1-in-10 gestures actually working).
+  // preventDefault both touchstart and touchmove for non-drawer touches.
+  // Reasoning: on Android Chrome, the second touchstart (when the user puts
+  // a second finger down for a pinch) is the moment the browser decides
+  // "this is a native gesture" and starts swallowing subsequent pointer
+  // events. preventDefault on touchstart blocks that decision.
   //
-  // We deliberately do NOT preventDefault on touchstart — that breaks the
-  // synthetic event chain on iOS and prevents single-tap detection there.
-  // For taps, the user doesn't move, so touchmove never fires.
-  document.addEventListener('touchmove', e => {
+  // Pointer events are independent of touch event preventDefault, so taps
+  // (handled in pointerup) still fire normally even with touchstart blocked.
+  const block = e => {
     if (e.target.closest('#drawer, #peek, #welcome')) return;
     e.preventDefault();
-  }, { passive: false });
+  };
+  document.addEventListener('touchstart', block, { passive: false });
+  document.addEventListener('touchmove', block, { passive: false });
 }

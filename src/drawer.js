@@ -313,6 +313,19 @@ function createSliderRow(slug) {
     handleCloseSlider(slug);
   });
 
+  // Tapping the row (anywhere outside the knob, marks, or close button) switches
+  // to this masechta at its current page. Useful for jumping back to where you
+  // are in another open masechta without scrubbing.
+  row.addEventListener('click', e => {
+    if (e.target.closest('.slider-knob, .slider-mark, .slider-close')) return;
+    const state = getState();
+    if (state.current === slug) return;
+    const page = state.pages[slug];
+    if (!page) return;
+    switchTo(slug);
+    onNavigate?.(slug, page.daf, page.amud);
+  });
+
   attachSliderInteraction(row, slug);
   return row;
 }
@@ -334,39 +347,58 @@ function updateSliderRow(row, slug, state) {
   // RTL: page progress runs right→left, so 0% on the right, 100% on the left
   knob.style.insetInlineStart = (pct * 100) + '%';
 
-  // Marks (anchor + trail entries for this slug)
-  const marks = marksForMasechta(slug);
-  // Remove old mark elements
-  for (const m of [...row.querySelectorAll('.slider-mark')]) m.remove();
+  // Marks (anchor + trail entries for this slug). Each mark renders as a
+  // diamond + a label below it; both are siblings of the knob.
+  for (const m of [...row.querySelectorAll('.slider-mark, .slider-mark-label')]) {
+    m.remove();
+  }
   const track = row.querySelector('.slider-track');
+  const marks = marksForMasechta(slug);
   for (const m of marks) {
     const mIdx = amudToIndex(m.daf, m.amud);
     const mPct = last === 0 ? 0 : mIdx / last;
+    const pctStr = (mPct * 100) + '%';
+
     const dot = document.createElement('div');
     dot.className = 'slider-mark';
-    dot.style.insetInlineStart = (mPct * 100) + '%';
-    dot.dataset.daf = String(m.daf);
-    dot.dataset.amud = m.amud;
-    dot.title = dafLabel(m.daf, m.amud);
+    dot.style.insetInlineStart = pctStr;
     dot.addEventListener('pointerdown', e => e.stopPropagation());
     dot.addEventListener('click', e => {
       e.stopPropagation();
       jumpTo(slug, m.daf, m.amud);
     });
-    // Insert before the knob so knob renders on top
+
+    const lbl = document.createElement('span');
+    lbl.className = 'slider-mark-label';
+    lbl.style.insetInlineStart = pctStr;
+    lbl.textContent = dafLabel(m.daf, m.amud);
+
     track.insertBefore(dot, knob);
+    track.insertBefore(lbl, knob);
   }
 }
 
-// ── Slider interaction (knob drag only — tap-on-track is intentionally
-// disabled to avoid accidental jumps when reaching for a mark) ──
+// ── Slider interaction ──
+//
+// Knob behavior is intentionally drag-only:
+//   - pointerdown on knob: arm; do NOT move the knob or show the bubble yet.
+//   - pointermove past a small threshold: enter drag mode (bubble appears,
+//     knob follows finger).
+//   - pointerup before threshold: no-op. The knob stays put. (This means
+//     a stray tap on the knob — say while reaching for a mark right next
+//     to it — doesn't accidentally jump the page.)
+//   - pointerup after threshold: navigate to the held index.
+
+const DRAG_THRESHOLD_PX = 6;
 
 function attachSliderInteraction(row, slug) {
   const wrap = row.querySelector('.slider-track-wrap');
   const knob = row.querySelector('.slider-knob');
   const bubble = row.querySelector('.slider-bubble');
 
-  let dragging = false;
+  let armed = false;       // pointerdown landed on knob, awaiting movement
+  let dragging = false;    // movement exceeded threshold, knob now follows
+  let startX = 0;
   let pendingIdx = null;
 
   function trackBounds() {
@@ -393,49 +425,59 @@ function attachSliderInteraction(row, slug) {
     knob.style.insetInlineStart = (pct * 100) + '%';
   }
 
-  // Drag must start on the knob itself. The track doesn't capture taps.
+  function snapBackToCurrent() {
+    const page = getState().pages[slug];
+    if (!page) return;
+    const last = lastAmudIndex(getTractate(slug));
+    const pct = last === 0 ? 0 : amudToIndex(page.daf, page.amud) / last;
+    knob.style.insetInlineStart = (pct * 100) + '%';
+  }
+
   knob.addEventListener('pointerdown', e => {
     e.preventDefault();
     e.stopPropagation();
     knob.setPointerCapture(e.pointerId);
-    const t = getTractate(slug);
-    dragging = true;
-    wrap.classList.add('dragging');
-    pendingIdx = indexAt(e.clientX, t);
-    showBubble(pendingIdx, t);
+    armed = true;
+    dragging = false;
+    startX = e.clientX;
+    pendingIdx = null;
   });
 
   knob.addEventListener('pointermove', e => {
-    if (!dragging) return;
+    if (!armed) return;
     const t = getTractate(slug);
+    if (!dragging) {
+      if (Math.abs(e.clientX - startX) < DRAG_THRESHOLD_PX) return;
+      dragging = true;
+      wrap.classList.add('dragging');
+    }
     pendingIdx = indexAt(e.clientX, t);
     showBubble(pendingIdx, t);
   });
 
   function release() {
-    if (!dragging) return;
+    const wasDragging = dragging;
+    armed = false;
     dragging = false;
     wrap.classList.remove('dragging');
-    if (pendingIdx != null) {
+    if (wasDragging && pendingIdx != null) {
       const { daf, amud } = indexToAmud(pendingIdx);
       pendingIdx = null;
       jumpTo(slug, daf, amud);
+    } else {
+      // Tap on knob — no-op. Snap back in case anything moved.
+      pendingIdx = null;
+      snapBackToCurrent();
     }
   }
 
   knob.addEventListener('pointerup', release);
   knob.addEventListener('pointercancel', () => {
+    armed = false;
     dragging = false;
     pendingIdx = null;
     wrap.classList.remove('dragging');
-    // Snap knob back to current position
-    const state = getState();
-    const page = state.pages[slug];
-    if (page) {
-      const last = lastAmudIndex(getTractate(slug));
-      const pct = last === 0 ? 0 : amudToIndex(page.daf, page.amud) / last;
-      knob.style.insetInlineStart = (pct * 100) + '%';
-    }
+    snapBackToCurrent();
   });
 }
 

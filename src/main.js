@@ -4,7 +4,9 @@ import {
   initNav, readUrlLocation, pushUrlLocation, clearUrlLocation,
   stepNext, stepPrev,
 } from './nav.js';
-import { getTractate, apiUrl, clampLocation } from './tractates.js';
+import {
+  getTractate, apiUrl, clampLocation, nextAmud, prevAmud,
+} from './tractates.js';
 import {
   getState, navigateTo as sessionNavigateTo, openMasechta, rehydrateTimers,
   currentPosition,
@@ -49,6 +51,25 @@ async function loadAt(slug, daf, amud) {
     console.error('Failed to load page:', err);
   } finally {
     loading.classList.add('hidden');
+  }
+
+  // After the visible page settles, warm the SW cache with the immediate
+  // neighbors so a swipe-prev / swipe-next is instant.
+  prefetchNeighbors(t, c.daf, c.amud);
+}
+
+// Fetch ±1 amudim into the SW cache. Best-effort; failures are silent.
+function prefetchNeighbors(tractate, daf, amud) {
+  const targets = [
+    nextAmud(tractate, daf, amud),
+    prevAmud(tractate, daf, amud),
+  ].filter(Boolean);
+  for (const t of targets) {
+    fetch(apiUrl(tractate, t.daf, t.amud), {
+      // Hint the browser this is low-priority background work
+      priority: 'low',
+      credentials: 'omit',
+    }).catch(() => {});
   }
 }
 

@@ -397,7 +397,7 @@ button {
 
 .slider-track-wrap {
   position: relative;
-  height: 36px;
+  height: 56px;
   padding: 0 12px;
   /* enlarge touch target */
   touch-action: none;
@@ -426,6 +426,23 @@ button {
   background: rgba(255, 180, 90, 0.95);
   box-shadow: 0 0 0 2px rgba(26, 18, 8, 0.9);
   cursor: pointer;
+  z-index: 1;
+}
+
+/* Daf label sits below the track, centered on its mark's x position.
+   Same RTL trick as the knob: inset-inline-start + translateX(50%) centers
+   the label on the underlying point. */
+.slider-mark-label {
+  position: absolute;
+  top: 100%;
+  margin-top: 8px;
+  transform: translateX(50%);
+  font-family: serif;
+  font-size: 12px;
+  color: rgba(255, 220, 150, 0.85);
+  white-space: nowrap;
+  pointer-events: none;
+  font-feature-settings: "tnum";
 }
 
 .slider-knob {

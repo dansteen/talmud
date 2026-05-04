@@ -523,19 +523,35 @@ button {
 .slider-bubble {
   position: absolute;
   bottom: 100%;
-  margin-bottom: 6px;
+  /* Lifted well above the track so an index-finger drag (finger pad
+     extending upward from the touch point) doesn't cover the value. */
+  margin-bottom: 56px;
   /* RTL centering: same translate(50%) trick as the knob */
   transform: translateX(50%);
   background: rgba(255, 230, 170, 0.95);
   color: #1a1208;
-  padding: 3px 10px;
-  border-radius: 10px;
+  padding: 4px 12px;
+  border-radius: 12px;
   font-family: serif;
-  font-size: 16px;
+  font-size: 18px;
+  font-weight: 500;
   white-space: nowrap;
   pointer-events: none;
   display: none;
   font-feature-settings: "tnum";
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* Caret pointing down toward the knob, so the user can see at a glance
+   which knob the bubble belongs to even when it's well above the track. */
+.slider-bubble::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  margin-left: -6px;
+  border: 6px solid transparent;
+  border-top-color: rgba(255, 230, 170, 0.95);
 }
 
 .slider-track-wrap.dragging .slider-bubble {

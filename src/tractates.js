@@ -128,10 +128,16 @@ export function locationLabel(tractate, daf, amud) {
   return `${tractate.he} ${dafLabel(daf, amud)}`;
 }
 
-// Tractates sorted alphabetically by Hebrew name (for the picker)
-export const TRACTATES_ALPHA = [...TRACTATES].sort((a, b) =>
-  a.he.localeCompare(b.he, 'he')
-);
+// Sedarim grouping for the picker. Slugs listed in their canonical seder order
+// (matching the order they appear in TRACTATES above).
+export const SEDARIM = [
+  { he: 'זרעים',  en: 'Zeraim',   slugs: ['berachos'] },
+  { he: 'מועד',   en: 'Moed',     slugs: ['shabbos','eruvin','pesachim','shekalim','yoma','sukkah','beitzah','rosh-hashanah','taanis','megillah','moed-katan','chagigah'] },
+  { he: 'נשים',   en: 'Nashim',   slugs: ['yevamos','kesuvos','nedarim','nazir','sotah','gittin','kiddushin'] },
+  { he: 'נזיקין', en: 'Nezikin',  slugs: ['bava-kamma','bava-metziah','bava-basra','sanhedrin','makkos','shevuos','avodah-zarah','horayos'] },
+  { he: 'קדשים',  en: 'Kodashim', slugs: ['zevachim','menachos','chullin','bechoros','arachin','temurah','kereisos','meilah'] },
+  { he: 'טהרות',  en: 'Tahoros',  slugs: ['niddah'] },
+];
 
 export function apiUrl(tractate, daf, amud) {
   return `/shas-api/?masechta=${tractate.slug}&daf=${daf}&amud=${amud}`;

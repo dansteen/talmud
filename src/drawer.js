@@ -2,7 +2,7 @@
 // All DOM concerns for the new chrome live here.
 
 import {
-  TRACTATES_ALPHA, getTractate,
+  SEDARIM, getTractate,
   amudToIndex, indexToAmud, lastAmudIndex, dafLabel,
 } from './tractates.js';
 import {
@@ -101,6 +101,11 @@ function bindPeek() {
   let startY = null;
   let dragging = false;
 
+  const releasePeek = () => {
+    startY = null;
+    peekEl.classList.remove('dragging');
+  };
+
   peekEl.addEventListener('pointerdown', e => {
     e.preventDefault();
     peekEl.setPointerCapture(e.pointerId);
@@ -112,23 +117,17 @@ function bindPeek() {
   peekEl.addEventListener('pointermove', e => {
     if (startY == null) return;
     const dy = e.clientY - startY;
-    if (dy < -8) dragging = true;
-    if (dragging && dy < -40) {
+    if (dy < -6) dragging = true;
+    if (dragging && dy < -28) {
       // Pulled up far enough — commit
       releasePeek();
       open(false);
     }
   });
 
-  const releasePeek = () => {
-    if (startY == null) return;
-    startY = null;
-    peekEl.classList.remove('dragging');
-  };
-
-  peekEl.addEventListener('pointerup', e => {
+  peekEl.addEventListener('pointerup', () => {
     const wasDragging = dragging;
-    releasePeek();
+    if (startY != null) releasePeek();
     if (!wasDragging) {
       // Treat as tap → open
       open(false);
@@ -185,13 +184,25 @@ function bindPicker() {
 
 function buildPickerList() {
   pickerListEl.innerHTML = '';
-  for (const t of TRACTATES_ALPHA) {
-    const tile = document.createElement('div');
-    tile.className = 'picker-tile';
-    tile.dataset.slug = t.slug;
-    tile.textContent = t.he;
-    tile.addEventListener('click', () => onPickTractate(t.slug));
-    pickerListEl.appendChild(tile);
+  for (const seder of SEDARIM) {
+    const header = document.createElement('div');
+    header.className = 'picker-seder-header';
+    header.textContent = `סדר ${seder.he}`;
+    pickerListEl.appendChild(header);
+
+    const grid = document.createElement('div');
+    grid.className = 'picker-seder-grid';
+    for (const slug of seder.slugs) {
+      const t = getTractate(slug);
+      if (!t) continue;
+      const tile = document.createElement('div');
+      tile.className = 'picker-tile';
+      tile.dataset.slug = slug;
+      tile.textContent = t.he;
+      tile.addEventListener('click', () => onPickTractate(slug));
+      grid.appendChild(tile);
+    }
+    pickerListEl.appendChild(grid);
   }
 }
 
@@ -347,7 +358,8 @@ function updateSliderRow(row, slug, state) {
   }
 }
 
-// ── Slider interaction (drag knob, tap track) ──
+// ── Slider interaction (knob drag only — tap-on-track is intentionally
+// disabled to avoid accidental jumps when reaching for a mark) ──
 
 function attachSliderInteraction(row, slug) {
   const wrap = row.querySelector('.slider-track-wrap');
@@ -381,11 +393,11 @@ function attachSliderInteraction(row, slug) {
     knob.style.insetInlineStart = (pct * 100) + '%';
   }
 
-  wrap.addEventListener('pointerdown', e => {
-    // Don't start drag if user tapped a mark (its handler runs first via stopPropagation)
-    if (e.target.classList.contains('slider-mark')) return;
+  // Drag must start on the knob itself. The track doesn't capture taps.
+  knob.addEventListener('pointerdown', e => {
     e.preventDefault();
-    wrap.setPointerCapture(e.pointerId);
+    e.stopPropagation();
+    knob.setPointerCapture(e.pointerId);
     const t = getTractate(slug);
     dragging = true;
     wrap.classList.add('dragging');
@@ -393,7 +405,7 @@ function attachSliderInteraction(row, slug) {
     showBubble(pendingIdx, t);
   });
 
-  wrap.addEventListener('pointermove', e => {
+  knob.addEventListener('pointermove', e => {
     if (!dragging) return;
     const t = getTractate(slug);
     pendingIdx = indexAt(e.clientX, t);
@@ -411,8 +423,8 @@ function attachSliderInteraction(row, slug) {
     }
   }
 
-  wrap.addEventListener('pointerup', release);
-  wrap.addEventListener('pointercancel', () => {
+  knob.addEventListener('pointerup', release);
+  knob.addEventListener('pointercancel', () => {
     dragging = false;
     pendingIdx = null;
     wrap.classList.remove('dragging');

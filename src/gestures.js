@@ -234,8 +234,13 @@ export function initGestures({ prev, next } = {}) {
   canvas.addEventListener('pointerup', onPointerUp, { passive: false });
   canvas.addEventListener('pointercancel', onPointerUp, { passive: false });
 
-  // Prevent default touch behaviors on the canvas itself only — allow native
-  // touch handling on the drawer / peek so its own pointer events work.
-  canvas.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
-  canvas.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+  // Prevent native browser gestures (scroll, pinch-zoom) on touches that land
+  // outside the drawer / peek. Without this, iOS Safari hijacks pinch and
+  // multi-touch gestures even with CSS touch-action: none on the canvas.
+  const blockNativeTouch = e => {
+    if (e.target.closest('#drawer, #peek, #welcome')) return;
+    e.preventDefault();
+  };
+  document.addEventListener('touchstart', blockNativeTouch, { passive: false });
+  document.addEventListener('touchmove', blockNativeTouch, { passive: false });
 }

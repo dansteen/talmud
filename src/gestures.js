@@ -14,19 +14,26 @@ const doubleTap = { time: 0, x: 0, y: 0 };
 const DOUBLE_TAP_MS = 280;
 const DOUBLE_TAP_PX = 35;
 
-// Track whether any pointer has moved significantly (distinguishes tap from drag)
+// Track movement to distinguish tap from drag and to detect swipes
 let gestureStartPointers = new Map();
+let gestureStartTime = 0;
 let hasMoved = false;
 const MOVE_THRESHOLD = 8;
 
-// Previous two-finger state for pinch/pan calculation
+// Three-finger swipe thresholds
+const SWIPE_TIME_MS = 600;
+const SWIPE_DISTANCE_PX = 60;
+
+// Two-finger pinch/pan state
 let prevMidX = 0, prevMidY = 0, prevDist = 0;
 
-// Whether we're currently in a "zoomed to region" state
 let zoomedRegion = null;
 
+// External callbacks (set in initGestures)
+let onPrev = null;
+let onNext = null;
+
 function isPalm(e) {
-  // Touch events with a large contact area are likely palms
   return e.pointerType === 'touch' && (
     (e.width > 60 || e.height > 60) ||
     (e.radiusX !== undefined && (e.radiusX > 30 || e.radiusY > 30))
@@ -50,6 +57,7 @@ function onPointerDown(e) {
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   gestureStartPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   hasMoved = false;
+  if (pointers.size === 1) gestureStartTime = Date.now();
 
   if (pointers.size === 2) {
     const state = twoFingerState();
@@ -63,14 +71,12 @@ function onPointerMove(e) {
   if (!pointers.has(e.pointerId)) return;
   e.preventDefault();
 
-  const prev = pointers.get(e.pointerId);
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-  // Track movement to distinguish tap from drag
   const start = gestureStartPointers.get(e.pointerId);
   if (start) {
     const dx = e.clientX - start.x, dy = e.clientY - start.y;
-    if (Math.sqrt(dx*dx + dy*dy) > MOVE_THRESHOLD) hasMoved = true;
+    if (Math.sqrt(dx * dx + dy * dy) > MOVE_THRESHOLD) hasMoved = true;
   }
 
   const count = pointers.size;
@@ -80,26 +86,34 @@ function onPointerMove(e) {
     return;
   }
 
-  if (count >= 2) {
+  if (count === 2) {
     const state = twoFingerState();
-
     const dScale = prevDist > 0 ? state.dist / prevDist : 1;
     const dx = state.midX - prevMidX;
     const dy = state.midY - prevMidY;
-
     applyDelta(dx, dy, dScale, state.midX, state.midY);
-
     prevDist = state.dist;
     prevMidX = state.midX;
     prevMidY = state.midY;
+    return;
   }
+
+  // 3+ fingers: don't pan/zoom — wait for release to detect swipe
 }
 
 function onPointerUp(e) {
   if (!pointers.has(e.pointerId)) return;
   e.preventDefault();
 
-  const wasOneFinger = pointers.size === 1;
+  const countBefore = pointers.size;
+  const wasOneFinger = countBefore === 1;
+  const wasThreeFinger = countBefore === 3;
+
+  // Detect 3-finger swipe at the moment the third finger lifts
+  if (wasThreeFinger) {
+    detectThreeFingerSwipe();
+  }
+
   pointers.delete(e.pointerId);
   gestureStartPointers.delete(e.pointerId);
 
@@ -108,7 +122,6 @@ function onPointerUp(e) {
   }
 
   if (pointers.size < 2) {
-    // Pinch ended — save zoom pref if we have a zoomed region
     if (zoomedRegion && pointers.size === 0) {
       setZoomPref(zoomedRegion.type, view.scale);
     }
@@ -119,38 +132,55 @@ function onPointerUp(e) {
   }
 }
 
+function detectThreeFingerSwipe() {
+  // Compute average dx across the 3 active pointers vs. their start positions
+  const elapsed = Date.now() - gestureStartTime;
+  if (elapsed > SWIPE_TIME_MS) return;
+
+  let sumDx = 0, sumDy = 0, n = 0;
+  for (const [id, cur] of pointers) {
+    const start = gestureStartPointers.get(id);
+    if (!start) continue;
+    sumDx += cur.x - start.x;
+    sumDy += cur.y - start.y;
+    n++;
+  }
+  if (n < 3) return;
+  const dx = sumDx / n;
+  const dy = sumDy / n;
+
+  // Require dominantly horizontal motion
+  if (Math.abs(dx) < SWIPE_DISTANCE_PX) return;
+  if (Math.abs(dy) > Math.abs(dx) * 0.7) return;
+
+  // RTL convention: swiping right = previous, swiping left = next
+  if (dx > 0) onPrev?.();
+  else onNext?.();
+}
+
 function handleTap(clientX, clientY) {
   const now = Date.now();
   const dx = clientX - doubleTap.x;
   const dy = clientY - doubleTap.y;
-  const dist = Math.sqrt(dx*dx + dy*dy);
+  const dist = Math.sqrt(dx * dx + dy * dy);
 
   if (now - doubleTap.time < DOUBLE_TAP_MS && dist < DOUBLE_TAP_PX) {
-    // Double tap
     doubleTap.time = 0;
     handleDoubleTap(clientX, clientY);
   } else {
     doubleTap.time = now;
     doubleTap.x = clientX;
     doubleTap.y = clientY;
-    // Single tap — toggle nav chrome after a short delay
-    // (cancel if a second tap comes in within double-tap window)
-    setTimeout(() => {
-      if (Date.now() - doubleTap.time >= DOUBLE_TAP_MS) {
-        toggleNavChrome();
-      }
-    }, DOUBLE_TAP_MS + 20);
+    // Single tap: no chrome toggle. Drawer is summoned via the peek.
   }
 }
 
 function handleDoubleTap(clientX, clientY) {
-  // Convert screen point to canvas-local coordinates
   const canvasRect = canvas.getBoundingClientRect();
   const localX = (clientX - canvasRect.left) / view.scale;
   const localY = (clientY - canvasRect.top) / view.scale;
 
   if (!regions || regions.length === 0) {
-    // No regions yet: toggle between home and a 2x zoom at tap point
     if (zoomedRegion) {
       goHome();
     } else {
@@ -160,7 +190,7 @@ function handleDoubleTap(clientX, clientY) {
         window.innerHeight / 2 - localY * s,
         s
       );
-      zoomedRegion = { type: 'gemara' }; // synthetic
+      zoomedRegion = { type: 'gemara' };
     }
     return;
   }
@@ -168,18 +198,15 @@ function handleDoubleTap(clientX, clientY) {
   const region = regionAtPoint(regions, localX, localY, view.cssW, view.cssH);
 
   if (!region || zoomedRegion) {
-    // Tapped outside regions or already zoomed → go home
     goHome();
     return;
   }
 
-  // Zoom to the tapped region
   const prefScale = getZoomPref(region.type);
   const target = transformForRegion(region, prefScale);
 
   zoomedRegion = region;
   animateTo(target.x, target.y, target.scale, () => {
-    // Save the settled scale as the new preference
     setZoomPref(region.type, view.scale);
   });
 }
@@ -190,13 +217,6 @@ function goHome() {
   animateTo(x, y, scale);
 }
 
-let navVisible = false;
-function toggleNavChrome() {
-  navVisible = !navVisible;
-  document.getElementById('nav-chrome').classList.toggle('hidden', !navVisible);
-}
-
-// Public: programmatically go home (e.g. from home button)
 export function returnHome() {
   goHome();
 }
@@ -205,13 +225,17 @@ export function isZoomed() {
   return zoomedRegion !== null;
 }
 
-export function initGestures() {
+export function initGestures({ prev, next } = {}) {
+  onPrev = prev;
+  onNext = next;
+
   canvas.addEventListener('pointerdown', onPointerDown, { passive: false });
   canvas.addEventListener('pointermove', onPointerMove, { passive: false });
   canvas.addEventListener('pointerup', onPointerUp, { passive: false });
   canvas.addEventListener('pointercancel', onPointerUp, { passive: false });
 
-  // Prevent default touch behaviors (scroll, pinch-zoom by browser)
-  document.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
-  document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+  // Prevent default touch behaviors on the canvas itself only — allow native
+  // touch handling on the drawer / peek so its own pointer events work.
+  canvas.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
+  canvas.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 }

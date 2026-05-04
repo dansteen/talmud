@@ -55,6 +55,25 @@ export function totalAmudim(tractate) {
   return inner + (tractate.lastAmud === 'b' ? 2 : 1);
 }
 
+// Convert daf/amud to a 0-based linear amud index
+// (2a → 0, 2b → 1, 3a → 2, …)
+export function amudToIndex(daf, amud) {
+  return (daf - 2) * 2 + (amud === 'b' ? 1 : 0);
+}
+
+// Convert a 0-based linear amud index back to daf/amud
+export function indexToAmud(index) {
+  return {
+    daf: 2 + Math.floor(index / 2),
+    amud: index % 2 === 0 ? 'a' : 'b',
+  };
+}
+
+// Last valid amud index for a tractate
+export function lastAmudIndex(tractate) {
+  return amudToIndex(tractate.lastDaf, tractate.lastAmud);
+}
+
 // Clamp daf/amud to valid range for a tractate
 export function clampLocation(tractate, daf, amud) {
   const d = Math.max(2, Math.min(daf, tractate.lastDaf));
@@ -100,9 +119,19 @@ export function dafToHebrew(daf) {
   return HE_DIGITS[daf] ?? String(daf);
 }
 
-export function locationLabel(tractate, daf, amud) {
-  return `${tractate.he} ${dafToHebrew(daf)}${amud === 'a' ? ' ע״א' : ' ע״ב'}`;
+// Standard talmud reference notation: "ה." for amud aleph, "ה:" for amud beis
+export function dafLabel(daf, amud) {
+  return `${dafToHebrew(daf)}${amud === 'a' ? '.' : ':'}`;
 }
+
+export function locationLabel(tractate, daf, amud) {
+  return `${tractate.he} ${dafLabel(daf, amud)}`;
+}
+
+// Tractates sorted alphabetically by Hebrew name (for the picker)
+export const TRACTATES_ALPHA = [...TRACTATES].sort((a, b) =>
+  a.he.localeCompare(b.he, 'he')
+);
 
 export function apiUrl(tractate, daf, amud) {
   return `/shas-api/?masechta=${tractate.slug}&daf=${daf}&amud=${amud}`;

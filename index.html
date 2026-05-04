@@ -24,43 +24,50 @@
       <div class="spinner"></div>
     </div>
 
-    <!-- Navigation chrome (toggled by single tap) -->
-    <div id="nav-chrome" class="hidden">
-      <div id="nav-top">
-        <button id="nav-menu-btn" class="icon-btn" aria-label="Choose tractate">☰</button>
-        <span id="current-location"></span>
-      </div>
-      <div id="nav-bottom">
-        <button id="prev-btn" class="icon-btn" aria-label="Previous daf">◁</button>
-        <button id="home-btn" class="icon-btn" aria-label="Fit page">⊡</button>
-        <button id="next-btn" class="icon-btn" aria-label="Next daf">▷</button>
-      </div>
-    </div>
-
-    <!-- Navigation drawer (tractate + daf picker) -->
-    <div id="nav-overlay" class="hidden"></div>
-    <div id="nav-drawer" class="hidden">
-      <div id="nav-drawer-header">
-        <span id="nav-drawer-title">בחר מסכת</span>
-        <button id="nav-close-btn" class="icon-btn">✕</button>
-      </div>
-      <div id="tractate-list"></div>
-      <div id="daf-picker" class="hidden">
-        <button id="daf-back-btn" class="icon-btn">‹ חזרה</button>
-        <span id="daf-picker-tractate"></span>
-        <div id="daf-controls">
-          <input type="number" id="daf-input" min="2" />
-          <div id="amud-toggle">
-            <button id="amud-a-btn" class="amud-btn active">א</button>
-            <button id="amud-b-btn" class="amud-btn">ב</button>
-          </div>
-          <button id="go-btn">עבור</button>
-        </div>
-      </div>
-    </div>
-
     <!-- Region detection pending indicator -->
     <div id="region-pending" class="hidden">⋯</div>
+
+    <!-- Welcome / guide screen (shown when no masechta is open) -->
+    <div id="welcome" class="hidden">
+      <div class="welcome-inner">
+        <h1 class="welcome-title">תלמוד</h1>
+        <ul class="welcome-guide">
+          <li><span class="welcome-key">הקש פעמיים</span> לזום לטור</li>
+          <li><span class="welcome-key">צביטה</span> להגדלה חופשית</li>
+          <li><span class="welcome-key">החלקה בשלוש אצבעות</span> לדף הבא או הקודם</li>
+          <li><span class="welcome-key">משוך מלמטה</span> לבחירת מסכת</li>
+        </ul>
+        <button id="welcome-open-btn">פתח</button>
+      </div>
+    </div>
+
+    <!-- Drawer peek (always visible at bottom) -->
+    <div id="peek">
+      <div id="peek-handle"></div>
+    </div>
+
+    <!-- Drawer scrim + drawer (slides up from bottom) -->
+    <div id="drawer-scrim" class="hidden"></div>
+    <div id="drawer" class="hidden">
+      <div id="drawer-grip">
+        <div id="drawer-grip-bar"></div>
+      </div>
+
+      <!-- Sliders sub-view -->
+      <div id="sliders-view" class="drawer-view">
+        <div id="slider-stack"></div>
+        <button id="add-masechta-btn">+ הוסף מסכת</button>
+      </div>
+
+      <!-- Picker sub-view -->
+      <div id="picker-view" class="drawer-view hidden">
+        <div id="picker-header">
+          <button id="picker-back-btn" aria-label="Back">›</button>
+          <span id="picker-title">בחר מסכת</span>
+        </div>
+        <div id="picker-list"></div>
+      </div>
+    </div>
 
   </div>
 

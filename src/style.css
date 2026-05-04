@@ -12,6 +12,14 @@ html, body, #app {
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: rgba(255, 220, 150, 0.9);
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* ── Viewer ── */
@@ -37,7 +45,7 @@ html, body, #app {
   transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Region debug overlay (?debug=1) */
+/* Region debug overlay (?debug=1 or 'd' key) */
 #region-overlay {
   position: absolute;
   top: 0;
@@ -73,7 +81,6 @@ html, body, #app {
   background: rgba(150, 170, 255, 0.06);
 }
 
-/* Banded region overlays — stack to form stair-step polygons */
 .region-band {
   pointer-events: none;
   outline-offset: -1px;
@@ -141,214 +148,14 @@ html, body, #app {
   to { transform: rotate(360deg); }
 }
 
-/* ── Nav chrome ── */
-
-#nav-chrome {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 20;
-}
-
-#nav-top {
-  position: absolute;
-  top: env(safe-area-inset-top, 0);
-  left: 0;
-  right: 0;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  background: linear-gradient(to bottom, rgba(26,18,8,0.85) 0%, transparent 100%);
-  pointer-events: all;
-}
-
-#nav-bottom {
-  position: absolute;
-  bottom: env(safe-area-inset-bottom, 0);
-  left: 0;
-  right: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 32px;
-  padding: 12px 16px;
-  background: linear-gradient(to top, rgba(26,18,8,0.85) 0%, transparent 100%);
-  pointer-events: all;
-}
-
-#current-location {
-  font-size: 16px;
-  color: rgba(255, 220, 150, 0.9);
-  font-family: serif;
-  flex: 1;
-  text-align: center;
-}
-
-.icon-btn {
-  background: none;
-  border: none;
-  color: rgba(255, 220, 150, 0.8);
-  font-size: 20px;
-  cursor: pointer;
-  padding: 6px;
-  border-radius: 6px;
-  line-height: 1;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.icon-btn:active {
-  opacity: 0.6;
-}
-
-/* ── Nav drawer ── */
-
-#nav-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.5);
-  z-index: 30;
-}
-
-#nav-drawer {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  max-height: 70vh;
-  background: #221a0e;
-  border-radius: 16px 16px 0 0;
-  z-index: 40;
-  display: flex;
-  flex-direction: column;
-  padding-bottom: env(safe-area-inset-bottom, 0);
-}
-
-#nav-drawer-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px 12px;
-  border-bottom: 1px solid rgba(255,220,150,0.1);
-  flex-shrink: 0;
-}
-
-#nav-drawer-title {
-  color: rgba(255,220,150,0.9);
-  font-size: 18px;
-  font-family: serif;
-}
-
-#tractate-list {
-  overflow-y: auto;
-  flex: 1;
-  padding: 8px 0;
-}
-
-.tractate-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 20px;
-  color: rgba(255,220,150,0.8);
-  font-size: 18px;
-  font-family: serif;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.tractate-item:active {
-  background: rgba(255,220,150,0.08);
-}
-
-.tractate-item .tractate-en {
-  font-size: 12px;
-  color: rgba(255,220,150,0.4);
-  font-family: sans-serif;
-}
-
-/* ── Daf picker ── */
-
-#daf-picker {
-  padding: 16px 20px;
-  border-top: 1px solid rgba(255,220,150,0.1);
-  flex-shrink: 0;
-}
-
-#daf-picker-tractate {
-  display: block;
-  color: rgba(255,220,150,0.7);
-  font-size: 16px;
-  font-family: serif;
-  margin: 10px 0;
-  text-align: center;
-}
-
-#daf-controls {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-}
-
-#daf-input {
-  width: 72px;
-  padding: 8px;
-  background: rgba(255,220,150,0.08);
-  border: 1px solid rgba(255,220,150,0.2);
-  border-radius: 8px;
-  color: rgba(255,220,150,0.9);
-  font-size: 20px;
-  text-align: center;
-  font-family: serif;
-}
-
-#amud-toggle {
-  display: flex;
-  border: 1px solid rgba(255,220,150,0.2);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.amud-btn {
-  background: none;
-  border: none;
-  color: rgba(255,220,150,0.5);
-  font-size: 18px;
-  font-family: serif;
-  padding: 8px 14px;
-  cursor: pointer;
-}
-
-.amud-btn.active {
-  background: rgba(255,220,150,0.15);
-  color: rgba(255,220,150,0.95);
-}
-
-#go-btn {
-  padding: 8px 20px;
-  background: rgba(255,220,150,0.15);
-  border: 1px solid rgba(255,220,150,0.3);
-  border-radius: 8px;
-  color: rgba(255,220,150,0.9);
-  font-size: 16px;
-  font-family: serif;
-  cursor: pointer;
-}
-
-#daf-back-btn {
-  font-size: 14px;
-  color: rgba(255,220,150,0.5);
-}
-
 /* ── Region pending ── */
 
 #region-pending {
   position: fixed;
-  bottom: 60px;
+  bottom: calc(env(safe-area-inset-bottom, 0) + 56px);
   left: 50%;
   transform: translateX(-50%);
-  color: rgba(255,220,150,0.4);
+  color: rgba(255, 220, 150, 0.4);
   font-size: 22px;
   letter-spacing: 4px;
   z-index: 10;
@@ -359,6 +166,387 @@ html, body, #app {
 @keyframes pulse {
   0%, 100% { opacity: 0.3; }
   50% { opacity: 0.8; }
+}
+
+/* ── Welcome screen ── */
+
+#welcome {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a1208;
+  padding: 32px 24px calc(env(safe-area-inset-bottom, 0) + 80px);
+}
+
+.welcome-inner {
+  max-width: 420px;
+  width: 100%;
+  text-align: center;
+}
+
+.welcome-title {
+  font-family: serif;
+  font-size: 56px;
+  font-weight: 400;
+  color: rgba(255, 220, 150, 0.95);
+  margin-bottom: 32px;
+  letter-spacing: 4px;
+}
+
+.welcome-guide {
+  list-style: none;
+  text-align: right;
+  font-size: 16px;
+  line-height: 1.9;
+  color: rgba(255, 220, 150, 0.7);
+  margin-bottom: 36px;
+  padding: 20px 24px;
+  background: rgba(255, 220, 150, 0.04);
+  border-radius: 12px;
+}
+
+.welcome-key {
+  color: rgba(255, 220, 150, 0.95);
+  font-weight: 500;
+}
+
+#welcome-open-btn {
+  background: rgba(255, 220, 150, 0.15);
+  border: 1px solid rgba(255, 220, 150, 0.35);
+  border-radius: 10px;
+  padding: 12px 48px;
+  font-size: 18px;
+  font-family: serif;
+  color: rgba(255, 220, 150, 0.95);
+  cursor: pointer;
+}
+
+#welcome-open-btn:active {
+  background: rgba(255, 220, 150, 0.25);
+}
+
+/* ── Peek (always visible at bottom) ── */
+
+#peek {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: calc(env(safe-area-inset-bottom, 0) + 28px);
+  z-index: 25;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 8px;
+  pointer-events: auto;
+  /* Invisible touch zone — only the handle is rendered */
+  background: linear-gradient(to top, rgba(26, 18, 8, 0.55) 0%, transparent 100%);
+}
+
+#peek-handle {
+  width: 48px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 220, 150, 0.35);
+}
+
+#peek.dragging #peek-handle {
+  background: rgba(255, 220, 150, 0.75);
+}
+
+/* ── Drawer ── */
+
+#drawer-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 30;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+#drawer-scrim.visible {
+  opacity: 1;
+}
+
+#drawer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 55vh;
+  min-height: 320px;
+  max-height: 640px;
+  background: #221a0e;
+  border-radius: 18px 18px 0 0;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  transform: translateY(100%);
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.5);
+}
+
+#drawer.open {
+  transform: translateY(0);
+}
+
+#drawer.dragging {
+  transition: none;
+}
+
+#drawer-grip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  cursor: grab;
+}
+
+#drawer-grip-bar {
+  width: 48px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 220, 150, 0.35);
+}
+
+.drawer-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Sliders view ── */
+
+#slider-stack {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 16px 4px;
+}
+
+.slider-row {
+  padding: 14px 4px 18px;
+  border-bottom: 1px solid rgba(255, 220, 150, 0.06);
+}
+
+.slider-row:last-child {
+  border-bottom: none;
+}
+
+.slider-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.slider-name {
+  font-family: serif;
+  font-size: 20px;
+  color: rgba(255, 220, 150, 0.95);
+}
+
+.slider-row.active .slider-name {
+  color: rgba(255, 230, 170, 1);
+}
+
+.slider-name-current {
+  font-size: 16px;
+  color: rgba(255, 220, 150, 0.6);
+  margin-inline-start: 10px;
+  font-feature-settings: "tnum";
+}
+
+.slider-close {
+  background: none;
+  border: none;
+  color: rgba(255, 220, 150, 0.5);
+  font-size: 20px;
+  line-height: 1;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.slider-close:active {
+  background: rgba(255, 220, 150, 0.1);
+}
+
+.slider-track-wrap {
+  position: relative;
+  height: 36px;
+  padding: 0 12px;
+  /* enlarge touch target */
+  touch-action: none;
+}
+
+.slider-track {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  right: 12px;
+  height: 4px;
+  margin-top: -2px;
+  background: rgba(255, 220, 150, 0.15);
+  border-radius: 2px;
+}
+
+.slider-mark {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  /* RTL: inset-inline-start means right; translate(50%,-50%) centers the dot
+     on that point */
+  transform: translate(50%, -50%);
+  border-radius: 50%;
+  background: rgba(255, 200, 80, 0.85);
+  box-shadow: 0 0 0 2px rgba(26, 18, 8, 0.9);
+  cursor: pointer;
+}
+
+.slider-knob {
+  position: absolute;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  transform: translate(50%, -50%);
+  border-radius: 50%;
+  background: rgba(255, 230, 170, 1);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  cursor: grab;
+}
+
+.slider-track-wrap.dragging .slider-knob {
+  cursor: grabbing;
+  transform: translate(50%, -50%) scale(1.15);
+}
+
+.slider-bubble {
+  position: absolute;
+  bottom: 100%;
+  margin-bottom: 6px;
+  /* RTL centering: same translate(50%) trick as the knob */
+  transform: translateX(50%);
+  background: rgba(255, 230, 170, 0.95);
+  color: #1a1208;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-family: serif;
+  font-size: 16px;
+  white-space: nowrap;
+  pointer-events: none;
+  display: none;
+  font-feature-settings: "tnum";
+}
+
+.slider-track-wrap.dragging .slider-bubble {
+  display: block;
+}
+
+.slider-bounds {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  padding: 0 12px;
+  font-family: serif;
+  font-size: 13px;
+  color: rgba(255, 220, 150, 0.45);
+}
+
+#add-masechta-btn {
+  flex-shrink: 0;
+  margin: 8px 16px 16px;
+  padding: 12px;
+  background: rgba(255, 220, 150, 0.08);
+  border: 1px dashed rgba(255, 220, 150, 0.25);
+  border-radius: 10px;
+  font-family: serif;
+  font-size: 16px;
+  color: rgba(255, 220, 150, 0.8);
+  cursor: pointer;
+}
+
+#add-masechta-btn:active {
+  background: rgba(255, 220, 150, 0.15);
+}
+
+.slider-empty {
+  text-align: center;
+  padding: 40px 20px 20px;
+  color: rgba(255, 220, 150, 0.5);
+  font-family: serif;
+  font-size: 16px;
+}
+
+/* ── Picker view ── */
+
+#picker-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 8px 12px 12px;
+  border-bottom: 1px solid rgba(255, 220, 150, 0.08);
+}
+
+#picker-back-btn {
+  background: none;
+  border: none;
+  color: rgba(255, 220, 150, 0.85);
+  font-size: 28px;
+  line-height: 1;
+  padding: 4px 12px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+#picker-back-btn:active {
+  background: rgba(255, 220, 150, 0.1);
+}
+
+#picker-title {
+  font-family: serif;
+  font-size: 18px;
+  color: rgba(255, 220, 150, 0.9);
+  margin-inline-start: 4px;
+}
+
+#picker-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 12px 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  align-content: start;
+}
+
+.picker-tile {
+  padding: 14px 8px;
+  background: rgba(255, 220, 150, 0.06);
+  border: 1px solid rgba(255, 220, 150, 0.12);
+  border-radius: 10px;
+  text-align: center;
+  cursor: pointer;
+  font-family: serif;
+  font-size: 18px;
+  color: rgba(255, 220, 150, 0.9);
+}
+
+.picker-tile:active {
+  background: rgba(255, 220, 150, 0.15);
+}
+
+.picker-tile.open {
+  background: rgba(255, 220, 150, 0.18);
+  border-color: rgba(255, 220, 150, 0.4);
 }
 
 /* ── Utility ── */

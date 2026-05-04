@@ -4,6 +4,7 @@
 const PREFS_KEY = 'talmud:zoom_prefs';
 const LAST_LOC_KEY = 'talmud:last_location';
 const REGION_CACHE_KEY = 'talmud:regions:v14';
+const SESSION_KEY = 'talmud:session:v1';
 
 function loadPrefs() {
   try { return JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); }
@@ -25,7 +26,7 @@ export function setZoomPref(regionType, scale) {
   savePrefs(prefs);
 }
 
-// Last viewed location
+// Last viewed location (legacy — kept for migration)
 export function getLastLocation() {
   try { return JSON.parse(localStorage.getItem(LAST_LOC_KEY) || 'null'); }
   catch { return null; }
@@ -35,9 +36,57 @@ export function setLastLocation(slug, daf, amud) {
   localStorage.setItem(LAST_LOC_KEY, JSON.stringify({ slug, daf, amud }));
 }
 
-// Per-page region cache (column bounding boxes)
-// Key: `${slug}:${daf}:${amud}`
-// Value: array of { x, y, w, h } in normalized [0..1] coords, plus type
+// ── Session state: open masechtos, current page per masechta, marks ──
+//
+// Shape:
+//   {
+//     open: ['berachos', 'shabbos'],        // open masechta slugs
+//     current: 'berachos',                   // active slug
+//     pages: { berachos: {daf, amud}, ... }, // current page per open masechta
+//     marks: {
+//       anchor: { slug, daf, amud } | null,
+//       trail: [ { slug, daf, amud }, ... ],  // never includes anchor
+//       anchorEnteredAt: number | null,       // ms when last entered anchor
+//     }
+//   }
+
+const EMPTY_SESSION = {
+  open: [],
+  current: null,
+  pages: {},
+  marks: { anchor: null, trail: [], anchorEnteredAt: null },
+};
+
+export function loadSession() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+    if (!raw) return null;
+    return {
+      open: Array.isArray(raw.open) ? raw.open : [],
+      current: raw.current || null,
+      pages: raw.pages || {},
+      marks: {
+        anchor: raw.marks?.anchor || null,
+        trail: Array.isArray(raw.marks?.trail) ? raw.marks.trail : [],
+        anchorEnteredAt: raw.marks?.anchorEnteredAt || null,
+      },
+    };
+  } catch { return null; }
+}
+
+export function saveSession(session) {
+  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+}
+
+export function clearSession() {
+  localStorage.removeItem(SESSION_KEY);
+}
+
+export function emptySession() {
+  return JSON.parse(JSON.stringify(EMPTY_SESSION));
+}
+
+// ── Region cache (column bounding boxes) ──
 
 function loadRegionCache() {
   try { return JSON.parse(localStorage.getItem(REGION_CACHE_KEY) || '{}'); }
@@ -47,7 +96,6 @@ function loadRegionCache() {
 function saveRegionCache(cache) {
   try { localStorage.setItem(REGION_CACHE_KEY, JSON.stringify(cache)); }
   catch {
-    // Storage full — clear oldest entries (keep last 200)
     const entries = Object.entries(cache);
     const trimmed = Object.fromEntries(entries.slice(-200));
     localStorage.setItem(REGION_CACHE_KEY, JSON.stringify(trimmed));

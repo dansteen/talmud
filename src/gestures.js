@@ -236,18 +236,13 @@ export function initGestures({ prev, next } = {}) {
   canvas.addEventListener('pointerup', onPointerUp, { passive: false });
   canvas.addEventListener('pointercancel', onPointerUp, { passive: false });
 
-  // preventDefault both touchstart and touchmove for non-drawer touches.
-  // Reasoning: on Android Chrome, the second touchstart (when the user puts
-  // a second finger down for a pinch) is the moment the browser decides
-  // "this is a native gesture" and starts swallowing subsequent pointer
-  // events. preventDefault on touchstart blocks that decision.
+  // Native browser gestures (pinch, pan, scroll) are suppressed via
+  // `touch-action: none` in CSS on html/body/#app/#viewer/#page-canvas.
   //
-  // Pointer events are independent of touch event preventDefault, so taps
-  // (handled in pointerup) still fire normally even with touchstart blocked.
-  const block = e => {
-    if (e.target.closest('#drawer, #peek, #welcome')) return;
-    e.preventDefault();
-  };
-  document.addEventListener('touchstart', block, { passive: false });
-  document.addEventListener('touchmove', block, { passive: false });
+  // We deliberately do NOT add document-level touchstart/touchmove
+  // preventDefault listeners. Per the Pointer Events spec, calling
+  // preventDefault on a touch event can cancel the corresponding pointer
+  // event on some browsers (Android Chrome historically had this behavior),
+  // which would prevent the canvas's pointerdown handler from firing at all
+  // — manifesting as gestures intermittently or never being detected.
 }

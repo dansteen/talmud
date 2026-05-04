@@ -52,10 +52,10 @@ function twoFingerState() {
 
 function onPointerDown(e) {
   if (isPalm(e)) return;
-  // Don't setPointerCapture — on iOS Safari it interacts badly with the
-  // canvas getting recreated by quality re-renders and can drop the capture
-  // mid-gesture, making subsequent gestures intermittent. Plain pointer
-  // events on the canvas work fine without it.
+  e.preventDefault();
+  // Capture the pointer so subsequent move/up events keep flowing to the
+  // canvas even if the finger drifts off it (common during pinch).
+  try { canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   gestureStartPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   hasMoved = false;
@@ -71,6 +71,7 @@ function onPointerDown(e) {
 
 function onPointerMove(e) {
   if (!pointers.has(e.pointerId)) return;
+  e.preventDefault();
 
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -104,6 +105,7 @@ function onPointerMove(e) {
 
 function onPointerUp(e) {
   if (!pointers.has(e.pointerId)) return;
+  e.preventDefault();
 
   const countBefore = pointers.size;
   const wasOneFinger = countBefore === 1;
@@ -229,19 +231,22 @@ export function initGestures({ prev, next } = {}) {
   onPrev = prev;
   onNext = next;
 
-  canvas.addEventListener('pointerdown', onPointerDown);
-  canvas.addEventListener('pointermove', onPointerMove);
-  canvas.addEventListener('pointerup', onPointerUp);
-  canvas.addEventListener('pointercancel', onPointerUp);
+  canvas.addEventListener('pointerdown', onPointerDown, { passive: false });
+  canvas.addEventListener('pointermove', onPointerMove, { passive: false });
+  canvas.addEventListener('pointerup', onPointerUp, { passive: false });
+  canvas.addEventListener('pointercancel', onPointerUp, { passive: false });
 
-  // Block native browser gestures (scroll, native pinch-zoom) on touchmove
-  // outside the drawer/peek/welcome. CSS `touch-action: none` covers most
-  // cases, but iOS Safari occasionally still tries to interpret two fingers
-  // as a native gesture, which steals subsequent pointer events.
-  // Crucially, we do NOT preventDefault on touchstart — that breaks the
-  // synthetic event chain that taps depend on.
+  // Always preventDefault touchmove on canvas-area touches. This is the key
+  // to keeping pointer events flowing for multi-touch on Android Chrome:
+  // without it, the browser commits to a native pinch gesture on the first
+  // multi-finger touchmove and stops delivering pointer events to JS for the
+  // rest of that gesture (manifesting as ~1-in-10 gestures actually working).
+  //
+  // We deliberately do NOT preventDefault on touchstart — that breaks the
+  // synthetic event chain on iOS and prevents single-tap detection there.
+  // For taps, the user doesn't move, so touchmove never fires.
   document.addEventListener('touchmove', e => {
     if (e.target.closest('#drawer, #peek, #welcome')) return;
-    if (e.touches.length > 1) e.preventDefault();
+    e.preventDefault();
   }, { passive: false });
 }

@@ -556,6 +556,9 @@ function attachSliderInteraction(row, slug) {
 function jumpTo(slug, daf, amud) {
   navigateTo(slug, daf, amud);
   onNavigate?.(slug, daf, amud);
+  // The user has committed to a specific page — get the drawer out of the
+  // way so they can see the result immediately.
+  close();
 }
 
 function handleCloseSlider(slug) {

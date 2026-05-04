@@ -135,22 +135,28 @@ function recordNavigation(prev, next, opts) {
   if (samePos(prev, next)) return;
 
   const marks = state.marks;
-  // If the user is leaving the initial 2a of a freshly-opened masechta, treat
-  // the leave as silent — neither anchor nor trail picks it up. They never
-  // really "landed" on 2a; that page was just where the masechta opened.
+  // The previous position was "fresh" (just-opened, never navigated within)
+  // — don't anchor to it. The user's real "home" is the first place they
+  // deliberately landed, which is `next` here.
   const prevWasFresh = state.freshOpens.includes(prev.slug);
 
-  // Sequential reading (3-finger swipe / arrows) shouldn't drop marks.
-  // Only jumps (slider, picker, mark tap) do.
-  if (!opts.skipMark && !prevWasFresh) {
-    if (!marks.anchor) {
+  // Sequential reading (3-finger swipe / arrows) shouldn't drop marks at all.
+  // Only deliberate jumps (slider drag, picker pick, mark tap) do.
+  if (!opts.skipMark) {
+    // Anchor: set on the first deliberate jump from a non-fresh position.
+    // Anchor is internal-only — it's not rendered. The user knows where
+    // they started from; the anchor exists so the 10-min "return home"
+    // timer has something to compare against.
+    if (!marks.anchor && !prevWasFresh) {
       marks.anchor = { ...prev };
-    } else {
-      const isAnchor = samePos(prev, marks.anchor);
-      const inTrail = marks.trail.some(m => samePos(m, prev));
-      if (!isAnchor && !inTrail) {
-        marks.trail = [...marks.trail, { ...prev }];
-      }
+    }
+    // Trail mark goes at the destination — the page the user just navigated
+    // TO. They see a mark drop where their finger ended up, not behind them.
+    // Skip if the destination already has a mark or is the anchor.
+    const isAnchor = samePos(next, marks.anchor);
+    const inTrail = marks.trail.some(m => samePos(m, next));
+    if (!isAnchor && !inTrail) {
+      marks.trail = [...marks.trail, { ...next }];
     }
   }
 
@@ -204,16 +210,12 @@ export function rehydrateTimers() {
   startAnchorTimerIfAtAnchor();
 }
 
-// All marks for a specific masechta (anchor + trail entries that match).
-// Returned in insertion order: anchor first, then trail.
+// Visible marks for a specific masechta. Only trail (destination) marks are
+// rendered — the anchor is an internal-only concept that drives the
+// "return home" timer; the user knows where they started, so it isn't
+// duplicated as a visible mark.
 export function marksForMasechta(slug) {
-  const marks = state.marks;
-  const out = [];
-  if (marks.anchor && marks.anchor.slug === slug) out.push(marks.anchor);
-  for (const m of marks.trail) {
-    if (m.slug === slug) out.push(m);
-  }
-  return out;
+  return state.marks.trail.filter(m => m.slug === slug);
 }
 
 export function hasAnyMarks() {

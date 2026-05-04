@@ -43,10 +43,11 @@ async function loadAt(slug, daf, amud) {
   pushUrlLocation(slug, c.daf, c.amud);
   setLastLocation(slug, c.daf, c.amud);
 
-  // Only show the loading spinner if the load takes longer than a brief
-  // threshold. Cache hits typically finish in well under this window, which
-  // avoids the flicker of seeing the spinner appear and immediately disappear.
-  const SPINNER_DELAY_MS = 250;
+  // Only show the loading spinner if the load takes longer than this. Cache
+  // hits (pdf.js parse + canvas render of a small PDF) typically settle in
+  // 200-400ms, so this threshold avoids the spinner flickering on fast paths.
+  // For slower (network) loads the user still gets feedback.
+  const SPINNER_DELAY_MS = 600;
   const spinnerTimer = setTimeout(() => {
     loading.classList.remove('hidden');
   }, SPINNER_DELAY_MS);

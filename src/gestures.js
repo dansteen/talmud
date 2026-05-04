@@ -52,8 +52,10 @@ function twoFingerState() {
 
 function onPointerDown(e) {
   if (isPalm(e)) return;
-  e.preventDefault();
-  canvas.setPointerCapture(e.pointerId);
+  // Don't setPointerCapture — on iOS Safari it interacts badly with the
+  // canvas getting recreated by quality re-renders and can drop the capture
+  // mid-gesture, making subsequent gestures intermittent. Plain pointer
+  // events on the canvas work fine without it.
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   gestureStartPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   hasMoved = false;
@@ -69,7 +71,6 @@ function onPointerDown(e) {
 
 function onPointerMove(e) {
   if (!pointers.has(e.pointerId)) return;
-  e.preventDefault();
 
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -103,7 +104,6 @@ function onPointerMove(e) {
 
 function onPointerUp(e) {
   if (!pointers.has(e.pointerId)) return;
-  e.preventDefault();
 
   const countBefore = pointers.size;
   const wasOneFinger = countBefore === 1;
@@ -229,13 +229,19 @@ export function initGestures({ prev, next } = {}) {
   onPrev = prev;
   onNext = next;
 
-  canvas.addEventListener('pointerdown', onPointerDown, { passive: false });
-  canvas.addEventListener('pointermove', onPointerMove, { passive: false });
-  canvas.addEventListener('pointerup', onPointerUp, { passive: false });
-  canvas.addEventListener('pointercancel', onPointerUp, { passive: false });
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointercancel', onPointerUp);
 
-  // Native browser gestures (scroll, pinch-zoom) are disabled via
-  // `touch-action: none` in CSS on html/body/#viewer/#page-canvas. We
-  // intentionally do NOT preventDefault on document touchstart here — doing so
-  // can interfere with the synthetic event chain on iOS and break taps.
+  // Block native browser gestures (scroll, native pinch-zoom) on touchmove
+  // outside the drawer/peek/welcome. CSS `touch-action: none` covers most
+  // cases, but iOS Safari occasionally still tries to interpret two fingers
+  // as a native gesture, which steals subsequent pointer events.
+  // Crucially, we do NOT preventDefault on touchstart — that breaks the
+  // synthetic event chain that taps depend on.
+  document.addEventListener('touchmove', e => {
+    if (e.target.closest('#drawer, #peek, #welcome')) return;
+    if (e.touches.length > 1) e.preventDefault();
+  }, { passive: false });
 }

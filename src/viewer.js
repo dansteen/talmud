@@ -107,7 +107,9 @@ export function scheduleQualityRender() {
 export async function loadPage(url, slug, daf, amud, onRegionsReady) {
   regions = null;
   document.getElementById('region-pending').classList.remove('hidden');
-  canvas.style.opacity = '0';
+  // Intentionally do NOT blank the canvas here. Keeping the previous page
+  // visible until pdf.js paints the new one over it makes cache-hit page
+  // switches feel instantaneous (no flash of empty canvas).
 
   const pdfDoc = await pdfjsLib.getDocument({
     url,
@@ -134,8 +136,6 @@ export async function loadPage(url, slug, daf, amud, onRegionsReady) {
   view.x = (window.innerWidth - view.cssW) / 2;
   view.y = (window.innerHeight - view.cssH) / 2;
   applyTransform(false);
-
-  canvas.style.opacity = '1';
 
   detectRegionsForPage(currentPdfPage, slug, daf, amud, onRegionsReady);
 }

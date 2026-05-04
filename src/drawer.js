@@ -346,14 +346,14 @@ function renderPickerSelection(state) {
 // ── Slider row ──
 
 function createSliderRow(slug) {
-  const t = getTractate(slug);
+  const tractate = getTractate(slug);
   const row = document.createElement('div');
   row.className = 'slider-row';
   row.dataset.slug = slug;
   row.innerHTML = `
     <div class="slider-row-header">
       <div>
-        <span class="slider-name">${t.he}</span>
+        <span class="slider-name">${tractate.he}</span>
         <span class="slider-name-current"></span>
       </div>
       <button class="slider-close" aria-label="${t('a11y.close')}">×</button>
@@ -367,7 +367,7 @@ function createSliderRow(slug) {
     </div>
     <div class="slider-bounds">
       <span class="slider-min">${dafLabel(2, 'a')}</span>
-      <span class="slider-max">${dafLabel(t.lastDaf, t.lastAmud)}</span>
+      <span class="slider-max">${dafLabel(tractate.lastDaf, tractate.lastAmud)}</span>
     </div>
   `;
 
@@ -394,13 +394,13 @@ function createSliderRow(slug) {
 }
 
 function updateSliderRow(row, slug, state) {
-  const t = getTractate(slug);
+  const tractate = getTractate(slug);
   const page = state.pages[slug];
   const isCurrent = state.current === slug;
 
   row.classList.toggle('active', isCurrent);
 
-  const last = lastAmudIndex(t);
+  const last = lastAmudIndex(tractate);
   const idx = amudToIndex(page.daf, page.amud);
   const pct = last === 0 ? 0 : idx / last;
   const pctStr = (pct * 100) + '%';
@@ -476,18 +476,18 @@ function attachSliderInteraction(row, slug) {
     return trackEl.getBoundingClientRect();
   }
 
-  function indexAt(clientX, t) {
+  function indexAt(clientX, tractate) {
     const rect = trackBounds();
     if (rect.width <= 0) return 0;
     // RTL: right edge = index 0, left edge = last
     let pct = (rect.right - clientX) / rect.width;
     pct = Math.max(0, Math.min(1, pct));
-    const last = lastAmudIndex(t);
+    const last = lastAmudIndex(tractate);
     return Math.round(pct * last);
   }
 
-  function showBubble(idx, t) {
-    const last = lastAmudIndex(t);
+  function showBubble(idx, tractate) {
+    const last = lastAmudIndex(tractate);
     const pct = last === 0 ? 0 : idx / last;
     const { daf, amud } = indexToAmud(idx);
     bubble.textContent = dafLabel(daf, amud);
@@ -515,14 +515,14 @@ function attachSliderInteraction(row, slug) {
 
   knob.addEventListener('pointermove', e => {
     if (!armed) return;
-    const t = getTractate(slug);
+    const tractate = getTractate(slug);
     if (!dragging) {
       if (Math.abs(e.clientX - startX) < DRAG_THRESHOLD_PX) return;
       dragging = true;
       wrap.classList.add('dragging');
     }
-    pendingIdx = indexAt(e.clientX, t);
-    showBubble(pendingIdx, t);
+    pendingIdx = indexAt(e.clientX, tractate);
+    showBubble(pendingIdx, tractate);
   });
 
   function release() {

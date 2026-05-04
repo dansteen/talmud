@@ -230,6 +230,40 @@ button {
   background: rgba(255, 220, 150, 0.25);
 }
 
+/* ── Language picker (welcome + drawer) ── */
+
+.lang-picker {
+  margin-top: 28px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 10px;
+}
+
+.lang-btn {
+  background: none;
+  border: none;
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: rgba(255, 220, 150, 0.55);
+  font-size: 14px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.lang-btn:active {
+  background: rgba(255, 220, 150, 0.1);
+}
+
+.lang-btn.active {
+  color: rgba(255, 235, 180, 1);
+  background: rgba(255, 220, 150, 0.12);
+}
+
+#drawer-lang {
+  margin: 4px 16px 12px;
+}
+
 /* ── Peek (always visible at bottom) ──
    The whole element is a swipe-up touch zone; only the small handle bar at
    the top is rendered visibly. Tall enough that a swipe up from the very

@@ -54,6 +54,10 @@ const EMPTY_SESSION = {
   open: [],
   current: null,
   pages: {},
+  // Masechtos that have been opened but not yet navigated within. Their
+  // initial 2a position is a transient stopover and shouldn't drop a mark
+  // when the user dives away from it.
+  freshOpens: [],
   marks: { anchor: null, trail: [], anchorEnteredAt: null },
 };
 
@@ -65,6 +69,7 @@ export function loadSession() {
       open: Array.isArray(raw.open) ? raw.open : [],
       current: raw.current || null,
       pages: raw.pages || {},
+      freshOpens: Array.isArray(raw.freshOpens) ? raw.freshOpens : [],
       marks: {
         anchor: raw.marks?.anchor || null,
         trail: Array.isArray(raw.marks?.trail) ? raw.marks.trail : [],

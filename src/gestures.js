@@ -234,13 +234,8 @@ export function initGestures({ prev, next } = {}) {
   canvas.addEventListener('pointerup', onPointerUp, { passive: false });
   canvas.addEventListener('pointercancel', onPointerUp, { passive: false });
 
-  // Prevent native browser gestures (scroll, pinch-zoom) on touches that land
-  // outside the drawer / peek. Without this, iOS Safari hijacks pinch and
-  // multi-touch gestures even with CSS touch-action: none on the canvas.
-  const blockNativeTouch = e => {
-    if (e.target.closest('#drawer, #peek, #welcome')) return;
-    e.preventDefault();
-  };
-  document.addEventListener('touchstart', blockNativeTouch, { passive: false });
-  document.addEventListener('touchmove', blockNativeTouch, { passive: false });
+  // Native browser gestures (scroll, pinch-zoom) are disabled via
+  // `touch-action: none` in CSS on html/body/#viewer/#page-canvas. We
+  // intentionally do NOT preventDefault on document touchstart here — doing so
+  // can interfere with the synthetic event chain on iOS and break taps.
 }

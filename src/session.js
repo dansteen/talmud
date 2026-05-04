@@ -56,6 +56,9 @@ export function openMasechta(slug, opts = {}) {
   if (!wasOpen) {
     state.open = [...state.open, slug];
     state.pages = { ...state.pages, [slug]: { daf: 2, amud: 'a' } };
+    // Mark this masechta as fresh: leaving its initial 2a position should
+    // not drop a mark there, since the user never deliberately landed on 2a.
+    state.freshOpens = [...state.freshOpens, slug];
   }
 
   // Switching off the current masechta drops a mark at the prior position.
@@ -87,6 +90,8 @@ export function navigateTo(slug, daf, amud, opts = {}) {
   state.pages = { ...state.pages, [slug]: { daf, amud } };
   const next = { slug, daf, amud };
   recordNavigation(prev, next, opts);
+  // The user has now navigated within this masechta, so it's no longer fresh.
+  state.freshOpens = state.freshOpens.filter(s => s !== slug);
   notify();
 }
 
@@ -102,6 +107,7 @@ export function closeMasechta(slug) {
   state.open = state.open.filter(s => s !== slug);
   const { [slug]: _, ...restPages } = state.pages;
   state.pages = restPages;
+  state.freshOpens = state.freshOpens.filter(s => s !== slug);
 
   // Drop marks belonging to the closed masechta (anchor included)
   if (state.marks.anchor?.slug === slug) {
@@ -129,10 +135,14 @@ function recordNavigation(prev, next, opts) {
   if (samePos(prev, next)) return;
 
   const marks = state.marks;
+  // If the user is leaving the initial 2a of a freshly-opened masechta, treat
+  // the leave as silent — neither anchor nor trail picks it up. They never
+  // really "landed" on 2a; that page was just where the masechta opened.
+  const prevWasFresh = state.freshOpens.includes(prev.slug);
 
   // Sequential reading (3-finger swipe / arrows) shouldn't drop marks.
   // Only jumps (slider, picker, mark tap) do.
-  if (!opts.skipMark) {
+  if (!opts.skipMark && !prevWasFresh) {
     if (!marks.anchor) {
       marks.anchor = { ...prev };
     } else {

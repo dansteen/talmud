@@ -9,6 +9,7 @@ import {
   getState, subscribe, openMasechta, switchTo, closeMasechta,
   navigateTo, marksForMasechta, currentPosition,
 } from './session.js';
+import { t, LOCALES, getLocale, setLocale, onLocaleChange } from './i18n.js';
 
 let onNavigate = null; // (slug, daf, amud) — called when user picks a new page
 let onShowWelcome = null; // () — called when no masechta is open
@@ -43,10 +44,66 @@ export function initDrawer({ navigate, showWelcome, hideWelcome }) {
   bindDrawer();
   bindPicker();
   bindWelcome();
+  buildLangPickers();
   buildPickerList();
+  applyStaticI18n();
+  syncDocumentLang();
 
   subscribe(render);
+  onLocaleChange(() => {
+    applyStaticI18n();
+    buildPickerList();
+    renderLangPickers();
+    syncDocumentLang();
+    // Re-render dynamic content (slider rows etc.) since strings may change
+    render(getState());
+  });
+
   render(getState());
+}
+
+function syncDocumentLang() {
+  // Reflect locale in the html lang attribute. We keep dir="rtl" globally
+  // because the slider conventions and page-number labels are inherently
+  // right-to-left; non-Hebrew UI text relies on Unicode bidi within RTL
+  // containers, which is acceptable for the tightly-scoped UI strings here.
+  document.documentElement.setAttribute('lang', getLocale());
+}
+
+// Apply translations to any element marked with data-i18n / data-i18n-aria.
+function applyStaticI18n() {
+  for (const el of document.querySelectorAll('[data-i18n]')) {
+    el.textContent = t(el.dataset.i18n);
+  }
+  for (const el of document.querySelectorAll('[data-i18n-aria]')) {
+    el.setAttribute('aria-label', t(el.dataset.i18nAria));
+  }
+}
+
+// ── Language pickers (welcome + drawer) ──
+
+function buildLangPickers() {
+  for (const id of ['welcome-lang', 'drawer-lang']) {
+    const host = document.getElementById(id);
+    if (!host) continue;
+    host.innerHTML = '';
+    for (const loc of LOCALES) {
+      const btn = document.createElement('button');
+      btn.className = 'lang-btn';
+      btn.dataset.code = loc.code;
+      btn.textContent = loc.name;
+      btn.addEventListener('click', () => setLocale(loc.code));
+      host.appendChild(btn);
+    }
+  }
+  renderLangPickers();
+}
+
+function renderLangPickers() {
+  const cur = getLocale();
+  for (const btn of document.querySelectorAll('.lang-btn')) {
+    btn.classList.toggle('active', btn.dataset.code === cur);
+  }
 }
 
 // ── Open / close ──
@@ -187,18 +244,20 @@ function buildPickerList() {
   for (const seder of SEDARIM) {
     const header = document.createElement('div');
     header.className = 'picker-seder-header';
-    header.textContent = `סדר ${seder.he}`;
+    // Seder names stay in Hebrew/Aramaic; the prefix word ("Seder", "Седер"...)
+    // is translated.
+    header.textContent = `${t('picker.sederPrefix')} ${seder.he}`;
     pickerListEl.appendChild(header);
 
     const grid = document.createElement('div');
     grid.className = 'picker-seder-grid';
     for (const slug of seder.slugs) {
-      const t = getTractate(slug);
-      if (!t) continue;
+      const tractate = getTractate(slug);
+      if (!tractate) continue;
       const tile = document.createElement('div');
       tile.className = 'picker-tile';
       tile.dataset.slug = slug;
-      tile.textContent = t.he;
+      tile.textContent = tractate.he;
       tile.addEventListener('click', () => onPickTractate(slug));
       grid.appendChild(tile);
     }
@@ -251,7 +310,7 @@ function render(state) {
 
 function renderSliders(state) {
   if (state.open.length === 0) {
-    sliderStackEl.innerHTML = '<div class="slider-empty">בחר מסכת לפתיחה</div>';
+    sliderStackEl.innerHTML = `<div class="slider-empty">${t('drawer.empty')}</div>`;
     return;
   }
 
@@ -297,7 +356,7 @@ function createSliderRow(slug) {
         <span class="slider-name">${t.he}</span>
         <span class="slider-name-current"></span>
       </div>
-      <button class="slider-close" aria-label="Close">×</button>
+      <button class="slider-close" aria-label="${t('a11y.close')}">×</button>
     </div>
     <div class="slider-track-wrap">
       <div class="slider-track">

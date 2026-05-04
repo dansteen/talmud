@@ -30,14 +30,15 @@
     <!-- Welcome / guide screen (shown when no masechta is open) -->
     <div id="welcome" class="hidden">
       <div class="welcome-inner">
-        <h1 class="welcome-title">תלמוד</h1>
+        <h1 class="welcome-title" data-i18n="app.title"></h1>
         <ul class="welcome-guide">
-          <li><span class="welcome-key">הקש פעמיים</span> לזום לטור</li>
-          <li><span class="welcome-key">צביטה</span> להגדלה חופשית</li>
-          <li><span class="welcome-key">החלקה בשלוש אצבעות</span> לדף הבא או הקודם</li>
-          <li><span class="welcome-key">משוך מלמטה</span> לבחירת מסכת</li>
+          <li data-i18n="welcome.guide.doubleTap"></li>
+          <li data-i18n="welcome.guide.pinch"></li>
+          <li data-i18n="welcome.guide.swipe"></li>
+          <li data-i18n="welcome.guide.pull"></li>
         </ul>
-        <button id="welcome-open-btn">פתח</button>
+        <button id="welcome-open-btn" data-i18n="welcome.openBtn"></button>
+        <div id="welcome-lang" class="lang-picker"></div>
       </div>
     </div>
 
@@ -56,14 +57,15 @@
       <!-- Sliders sub-view -->
       <div id="sliders-view" class="drawer-view">
         <div id="slider-stack"></div>
-        <button id="add-masechta-btn">+ הוסף מסכת</button>
+        <button id="add-masechta-btn" data-i18n="drawer.addMasechta"></button>
+        <div id="drawer-lang" class="lang-picker"></div>
       </div>
 
       <!-- Picker sub-view -->
       <div id="picker-view" class="drawer-view hidden">
         <div id="picker-header">
-          <button id="picker-back-btn" aria-label="Back">›</button>
-          <span id="picker-title">בחר מסכת</span>
+          <button id="picker-back-btn" data-i18n-aria="a11y.back">›</button>
+          <span id="picker-title" data-i18n="picker.title"></span>
         </div>
         <div id="picker-list"></div>
       </div>

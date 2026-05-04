@@ -432,7 +432,8 @@ button {
 /* Daf label sits below the track, centered on its mark's x position.
    Same RTL trick as the knob: inset-inline-start + translateX(50%) centers
    the label on the underlying point. */
-.slider-mark-label {
+.slider-mark-label,
+.slider-knob-label {
   position: absolute;
   top: 100%;
   margin-top: 8px;
@@ -443,6 +444,19 @@ button {
   white-space: nowrap;
   pointer-events: none;
   font-feature-settings: "tnum";
+}
+
+/* The knob's own label is the visual indicator that "I am here". A bit
+   brighter than mark labels so the current spot reads clearly. */
+.slider-knob-label {
+  color: rgba(255, 235, 180, 1);
+  font-weight: 500;
+}
+
+/* During a knob drag the bubble takes over above the track, so hide the
+   stationary label below to avoid a double label / visual stutter. */
+.slider-track-wrap.dragging .slider-knob-label {
+  visibility: hidden;
 }
 
 .slider-knob {

@@ -209,17 +209,20 @@ function buildPickerList() {
 function onPickTractate(slug) {
   const state = getState();
   if (state.open.includes(slug)) {
-    // Already open — just switch to it (no page change)
+    // Already open — just switch to it (no page change). For an existing
+    // masechta the user knows where they are, so close the drawer.
     if (state.current !== slug) switchTo(slug);
     const page = getState().pages[slug];
     onNavigate?.(slug, page.daf, page.amud);
+    showSliders();
+    close();
   } else {
-    // Adds at 2a, switches to it, navigates
+    // Newly opened masechtos almost always need a page chosen — leave the
+    // drawer in sliders view so the user can scrub the new slider.
     openMasechta(slug);
     onNavigate?.(slug, 2, 'a');
+    showSliders();
   }
-  showSliders();
-  close();
 }
 
 // ── Welcome screen ──
@@ -299,6 +302,7 @@ function createSliderRow(slug) {
     <div class="slider-track-wrap">
       <div class="slider-track">
         <div class="slider-knob"></div>
+        <span class="slider-knob-label"></span>
         <div class="slider-bubble"></div>
       </div>
     </div>
@@ -340,12 +344,19 @@ function updateSliderRow(row, slug, state) {
   const last = lastAmudIndex(t);
   const idx = amudToIndex(page.daf, page.amud);
   const pct = last === 0 ? 0 : idx / last;
+  const pctStr = (pct * 100) + '%';
 
   row.querySelector('.slider-name-current').textContent = dafLabel(page.daf, page.amud);
 
   const knob = row.querySelector('.slider-knob');
   // RTL: page progress runs right→left, so 0% on the right, 100% on the left
-  knob.style.insetInlineStart = (pct * 100) + '%';
+  knob.style.insetInlineStart = pctStr;
+
+  // Label under the knob mirrors the mark labels — current page is always
+  // visually "marked" the same way past positions are.
+  const knobLabel = row.querySelector('.slider-knob-label');
+  knobLabel.textContent = dafLabel(page.daf, page.amud);
+  knobLabel.style.insetInlineStart = pctStr;
 
   // Marks (anchor + trail entries for this slug). Each mark renders as a
   // diamond + a label below it; both are siblings of the knob.

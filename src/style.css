@@ -9,7 +9,12 @@ html, body, #app {
   height: 100%;
   overflow: hidden;
   background: #1a1208;
-  touch-action: none;
+  /* Note: NOT setting touch-action: none here. The browser uses the most
+     restrictive touch-action across all ancestors of a touched element, so
+     setting `none` at the root would block scroll on every descendant
+     (including the drawer's slider list). overflow: hidden already prevents
+     body scroll; touch-action: none lives only on #viewer / #page-canvas,
+     where it's actually needed to suppress native pinch on the PDF. */
   user-select: none;
   -webkit-user-select: none;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -125,7 +130,10 @@ button {
   pointer-events: none;
 }
 
-/* ── Loading ── */
+/* ── Loading ──
+   z-index sits below the drawer (35) and peek (25) so it covers the PDF
+   display only — the drawer chrome stays interactive while a page loads
+   in the background. */
 
 #loading {
   position: fixed;
@@ -134,7 +142,7 @@ button {
   align-items: center;
   justify-content: center;
   background: rgba(26, 18, 8, 0.7);
-  z-index: 50;
+  z-index: 20;
 }
 
 .spinner {
@@ -249,6 +257,17 @@ button {
   font-size: 14px;
   cursor: pointer;
   font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lang-flag {
+  /* Emoji flags render via the system color font; sizing them here keeps
+     them aligned with the language name regardless of font-feature
+     settings on the parent. */
+  font-size: 16px;
+  line-height: 1;
 }
 
 .lang-btn:active {
@@ -433,8 +452,10 @@ button {
   position: relative;
   height: 56px;
   padding: 0 12px;
-  /* enlarge touch target */
-  touch-action: none;
+  /* pan-y (not none) lets vertical scroll bubble up to the drawer when the
+     user starts a drag on the slider row but moves vertically. The knob's
+     own pointer handlers still pick up horizontal drag for slider scrub. */
+  touch-action: pan-y;
 }
 
 .slider-track {
@@ -490,6 +511,13 @@ button {
 /* During a knob drag the bubble takes over above the track, so hide the
    stationary label below to avoid a double label / visual stutter. */
 .slider-track-wrap.dragging .slider-knob-label {
+  visibility: hidden;
+}
+
+/* When a mark sits close enough to the current knob position that their
+   labels would collide, hide the mark's label and let the knob's label
+   stand for both — the knob is showing the same daf anyway. */
+.slider-mark-label.hidden-by-knob {
   visibility: hidden;
 }
 

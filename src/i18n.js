@@ -7,11 +7,13 @@
 const STORAGE_KEY = 'talmud:locale';
 
 export const LOCALES = [
-  { code: 'en', name: 'English' },
-  { code: 'es', name: 'Español' },
-  { code: 'fr', name: 'Français' },
-  { code: 'he', name: 'עברית' },
-  { code: 'ru', name: 'Русский' },
+  { code: 'en', name: 'English',  flag: '🇺🇸' },
+  // Spanish-speaking Latin America rather than Spain — Argentine flag stands
+  // in as a recognizable South American Spanish marker.
+  { code: 'es', name: 'Español',  flag: '🇦🇷' },
+  { code: 'fr', name: 'Français', flag: '🇫🇷' },
+  { code: 'he', name: 'עברית',    flag: '🇮🇱' },
+  { code: 'ru', name: 'Русский',  flag: '🇷🇺' },
 ];
 
 const STRINGS = {
@@ -23,7 +25,7 @@ const STRINGS = {
     'welcome.guide.pull': 'Pull up from the bottom to pick a masechta',
     'welcome.openBtn': 'Open',
     'drawer.empty': 'Pick a masechta to open',
-    'drawer.addMasechta': '+ Add masechta',
+    'drawer.addMasechta': '+ Add another masechta',
     'picker.title': 'Pick a masechta',
     'picker.sederPrefix': 'Seder',
     'language.label': 'Language',
@@ -38,7 +40,7 @@ const STRINGS = {
     'welcome.guide.pull': 'Tire hacia arriba desde abajo para elegir un masejet',
     'welcome.openBtn': 'Abrir',
     'drawer.empty': 'Elija un masejet para abrir',
-    'drawer.addMasechta': '+ Agregar masejet',
+    'drawer.addMasechta': '+ Agregar otro masejet',
     'picker.title': 'Elija un masejet',
     'picker.sederPrefix': 'Seder',
     'language.label': 'Idioma',
@@ -53,7 +55,7 @@ const STRINGS = {
     'welcome.guide.pull': 'Tirez vers le haut depuis le bas pour choisir un massekhet',
     'welcome.openBtn': 'Ouvrir',
     'drawer.empty': 'Choisissez un massekhet à ouvrir',
-    'drawer.addMasechta': '+ Ajouter un massekhet',
+    'drawer.addMasechta': '+ Ajouter un autre massekhet',
     'picker.title': 'Choisissez un massekhet',
     'picker.sederPrefix': 'Seder',
     'language.label': 'Langue',
@@ -68,7 +70,7 @@ const STRINGS = {
     'welcome.guide.pull': 'משוך מלמטה לבחירת מסכת',
     'welcome.openBtn': 'פתח',
     'drawer.empty': 'בחר מסכת לפתיחה',
-    'drawer.addMasechta': '+ הוסף מסכת',
+    'drawer.addMasechta': '+ הוסף עוד מסכת',
     'picker.title': 'בחר מסכת',
     'picker.sederPrefix': 'סדר',
     'language.label': 'שפה',
@@ -83,7 +85,7 @@ const STRINGS = {
     'welcome.guide.pull': 'Потяните снизу, чтобы выбрать масехет',
     'welcome.openBtn': 'Открыть',
     'drawer.empty': 'Выберите масехет, чтобы открыть',
-    'drawer.addMasechta': '+ Добавить масехет',
+    'drawer.addMasechta': '+ Добавить ещё один масехет',
     'picker.title': 'Выберите масехет',
     'picker.sederPrefix': 'Седер',
     'language.label': 'Язык',

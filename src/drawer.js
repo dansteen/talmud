@@ -91,7 +91,9 @@ function buildLangPickers() {
       const btn = document.createElement('button');
       btn.className = 'lang-btn';
       btn.dataset.code = loc.code;
-      btn.textContent = loc.name;
+      btn.innerHTML =
+        `<span class="lang-flag">${loc.flag}</span>` +
+        `<span class="lang-name">${loc.name}</span>`;
       btn.addEventListener('click', () => setLocale(loc.code));
       host.appendChild(btn);
     }
@@ -424,6 +426,9 @@ function updateSliderRow(row, slug, state) {
   }
   const track = row.querySelector('.slider-track');
   const marks = marksForMasechta(slug);
+  // Hide any mark label that's close enough to the knob's position that the
+  // two label texts would collide. Threshold is in percent of track length.
+  const labelOverlapPct = labelOverlapThreshold(track);
   for (const m of marks) {
     const mIdx = amudToIndex(m.daf, m.amud);
     const mPct = last === 0 ? 0 : mIdx / last;
@@ -442,10 +447,23 @@ function updateSliderRow(row, slug, state) {
     lbl.className = 'slider-mark-label';
     lbl.style.insetInlineStart = pctStr;
     lbl.textContent = dafLabel(m.daf, m.amud);
+    if (Math.abs(mPct - pct) < labelOverlapPct) {
+      lbl.classList.add('hidden-by-knob');
+    }
 
     track.insertBefore(dot, knob);
     track.insertBefore(lbl, knob);
   }
+}
+
+// Returns the minimum percent-of-track distance below which two labels would
+// overlap. ~30px of label width is a reasonable rule of thumb; we measure the
+// track's actual width and convert. Falls back to 5% if the track hasn't been
+// laid out yet.
+function labelOverlapThreshold(track) {
+  const w = track.getBoundingClientRect().width;
+  if (w <= 0) return 0.05;
+  return 30 / w;
 }
 
 // ── Slider interaction ──

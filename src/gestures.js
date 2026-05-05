@@ -37,12 +37,6 @@ let zoomedRegion = null;
 let onPrev = null;
 let onNext = null;
 
-function isPalm(touch) {
-  // Touches with a large contact radius are likely palms / heel of hand
-  return (touch.radiusX !== undefined && touch.radiusX > 30) ||
-         (touch.radiusY !== undefined && touch.radiusY > 30);
-}
-
 function twoTouchState() {
   const pts = [...touches.values()];
   const dx = pts[1].x - pts[0].x;
@@ -57,7 +51,6 @@ function onTouchStart(e) {
   e.preventDefault(); // prevents native pinch/scroll on this touch sequence
 
   for (const t of e.changedTouches) {
-    if (isPalm(t)) continue;
     touches.set(t.identifier, { x: t.clientX, y: t.clientY });
     touchStarts.set(t.identifier, { x: t.clientX, y: t.clientY });
   }
@@ -270,13 +263,15 @@ function enableGestureDebug() {
     log.style.borderLeft = `4px solid ${color}`;
   };
 
+  const radii = ts => [...ts].map(t => `r${t.radiusX|0}x${t.radiusY|0}`).join(' ');
+
   canvas.addEventListener('touchstart', e => note(
-    `touchstart fingers=${e.touches.length} tracked=${touches.size}`, '#0af'
+    `start n=${e.touches.length} tr=${touches.size} ${radii(e.changedTouches)}`, '#0af'
   ), { passive: true });
   canvas.addEventListener('touchmove', e => note(
-    `touchmove fingers=${e.touches.length} moved=${hasMoved}`, '#0a8'
+    `move n=${e.touches.length} moved=${hasMoved}`, '#0a8'
   ), { passive: true });
   canvas.addEventListener('touchend', e => note(
-    `touchend remaining=${e.touches.length}`, '#0af'
+    `end remaining=${e.touches.length}`, '#0af'
   ), { passive: true });
 }

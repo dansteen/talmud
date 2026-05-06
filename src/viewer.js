@@ -128,11 +128,12 @@ function applyTransform(animated = false) {
 //   bbox_right     = (textBbox.x + textBbox.w) * renderScale
 // Constraint: bbox_left ≤ visible_left  AND  visible_right ≤ bbox_right.
 // Whitespace breathing room (in screen pixels) between the text bbox edge
-// and the screen edge — applied only when zoomed in (bbox wider than the
-// viewport). At full zoom-out, the bbox sits narrower than the viewport and
-// constrainView ignores the margin in favor of centering, so there's no
-// leftover slack to pan into when fully zoomed out.
-const EDGE_MARGIN_PX = 24;
+// and the screen edge when zoomed in (bbox wider than the viewport). Sized
+// to roughly match the natural margin that the 0.98-of-screen fitScale
+// gives at full zoom-out — keeps a small consistent strip of whitespace
+// at the screen edge instead of pushing text flush against it. At full
+// zoom-out constrainView ignores this and forces exact centering.
+const EDGE_MARGIN_PX = 8;
 
 // Last `marginPx` passed to constrainView — used as the default for callers
 // that don't pass one explicitly (e.g., scheduleQualityRender, which fires

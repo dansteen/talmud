@@ -526,8 +526,11 @@ button {
 
 /* Staggered label: lifted above the track when its neighbor (a mark or the
    knob) sits right next to it, so the two labels read as separate items
-   instead of overlapping. The diamond mark itself stays on the track. */
-.slider-mark-label.label-above {
+   instead of overlapping. The diamond mark itself stays on the track.
+   Applies to both mark labels and the knob label (so when the user is on
+   a marked page that staggered to "above", the knob label moves to match). */
+.slider-mark-label.label-above,
+.slider-knob-label.label-above {
   top: auto;
   bottom: calc(100% + 8px);
   margin-top: 0;

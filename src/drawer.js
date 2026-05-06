@@ -460,6 +460,10 @@ function updateSliderRow(row, slug, state) {
 
   let lastSide = null;
   let lastPct = -Infinity;
+  // If a mark at the knob's position ends up "above", we mirror the knob's
+  // own label to the same side. Otherwise the user would see the knob's
+  // label below and the mark's identical label above — visually redundant.
+  let knobLabelAbove = false;
   for (const item of positions) {
     if (item.kind === 'knob') {
       lastSide = 'below';
@@ -473,6 +477,10 @@ function updateSliderRow(row, slug, state) {
     const side = close
       ? (lastSide === 'below' ? 'above' : 'below')
       : 'below';
+
+    if (side === 'above' && Math.abs(mPct - pct) < 1e-6) {
+      knobLabelAbove = true;
+    }
 
     const dot = document.createElement('div');
     dot.className = 'slider-mark';
@@ -502,6 +510,11 @@ function updateSliderRow(row, slug, state) {
     lastSide = side;
     lastPct = mPct;
   }
+
+  // Mirror the knob's label to the same side as a coincident "above" mark
+  // so the two labels stack on the same side instead of one above + one
+  // below the track.
+  knobLabel.classList.toggle('label-above', knobLabelAbove);
 }
 
 // Returns the minimum percent-of-track distance below which two labels would

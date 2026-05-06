@@ -433,36 +433,49 @@ function updateSliderRow(row, slug, state) {
   knobLabel.textContent = dafLabel(page.daf, page.amud);
   knobLabel.style.insetInlineStart = pctStr;
 
-  // Marks (anchor + trail entries for this slug). Each mark renders as a
-  // diamond + a label below the track. When neighboring marks would crowd
-  // each other (label widths overlap in track-pct space), we alternate
-  // them above and below the track so they read cleanly.
+  // Marks (anchor + trail entries for this slug). Each mark's diamond stays
+  // on the track; only its *label* is staggered above or below to avoid
+  // collisions. The knob's own label always sits below the track and is
+  // included in the stagger calculation, so a mark sitting at the knob's
+  // position simply puts its label on the opposite side rather than being
+  // hidden — the user can see it the moment they arrive at the page.
   for (const m of [...row.querySelectorAll('.slider-mark, .slider-mark-label')]) {
     m.remove();
   }
   const track = row.querySelector('.slider-track');
   const marks = marksForMasechta(slug);
   const labelOverlapPct = labelOverlapThreshold(track);
-  // Sort by position so the stagger pass sees them left-to-right.
-  const sortedMarks = [...marks].sort((a, b) =>
-    amudToIndex(a.daf, a.amud) - amudToIndex(b.daf, b.amud)
-  );
-  let lastSide = 'below';
+
+  // Build a single sorted list of "label positions": each mark plus the knob.
+  // The knob is anchored to "below" (its label position never moves). Each
+  // mark then takes the opposite side of its predecessor whenever close.
+  const positions = [
+    { kind: 'knob', pct },
+    ...marks.map(m => ({
+      kind: 'mark',
+      mark: m,
+      pct: last === 0 ? 0 : amudToIndex(m.daf, m.amud) / last,
+    })),
+  ].sort((a, b) => a.pct - b.pct);
+
+  let lastSide = null;
   let lastPct = -Infinity;
-  for (const m of sortedMarks) {
-    const mIdx = amudToIndex(m.daf, m.amud);
-    const mPct = last === 0 ? 0 : mIdx / last;
+  for (const item of positions) {
+    if (item.kind === 'knob') {
+      lastSide = 'below';
+      lastPct = item.pct;
+      continue;
+    }
+    const m = item.mark;
+    const mPct = item.pct;
     const pctStr = (mPct * 100) + '%';
-    // First mark stays "below" (default). Each subsequent mark flips to the
-    // opposite side from its predecessor whenever the predecessor is too
-    // close to fit a non-overlapping label.
-    const overlapsPrev = (mPct - lastPct) < labelOverlapPct;
-    const side = overlapsPrev
+    const close = (mPct - lastPct) < labelOverlapPct;
+    const side = close
       ? (lastSide === 'below' ? 'above' : 'below')
       : 'below';
 
     const dot = document.createElement('div');
-    dot.className = side === 'above' ? 'slider-mark mark-above' : 'slider-mark';
+    dot.className = 'slider-mark';
     dot.style.insetInlineStart = pctStr;
     dot.addEventListener('pointerdown', e => e.stopPropagation());
     dot.addEventListener('click', e => {
@@ -476,12 +489,12 @@ function updateSliderRow(row, slug, state) {
       : 'slider-mark-label';
     lbl.style.insetInlineStart = pctStr;
     lbl.textContent = dafLabel(m.daf, m.amud);
-    // The knob's label sits below the track. Only hide a "below" mark's
-    // label when the knob is right on top of it — "above" marks live on
-    // the other side and don't conflict.
-    if (side === 'below' && Math.abs(mPct - pct) < labelOverlapPct) {
-      lbl.classList.add('hidden-by-knob');
-    }
+    // Tapping the label is the same as tapping the diamond — easier target.
+    lbl.addEventListener('pointerdown', e => e.stopPropagation());
+    lbl.addEventListener('click', e => {
+      e.stopPropagation();
+      jumpTo(slug, m.daf, m.amud);
+    });
 
     track.insertBefore(dot, knob);
     track.insertBefore(lbl, knob);

@@ -497,8 +497,18 @@ button {
   font-size: 12px;
   color: rgba(255, 220, 150, 0.85);
   white-space: nowrap;
-  pointer-events: none;
   font-feature-settings: "tnum";
+}
+
+/* Mark labels are tappable shortcuts — the diamond is small, the label is
+   wider, easier to hit. The knob's label remains pointer-events: none
+   below. */
+.slider-mark-label {
+  cursor: pointer;
+}
+
+.slider-knob-label {
+  pointer-events: none;
 }
 
 /* The knob's own label is the visual indicator that "I am here". A bit
@@ -514,22 +524,9 @@ button {
   visibility: hidden;
 }
 
-/* When a mark sits close enough to the current knob position that their
-   labels would collide, hide the mark's label and let the knob's label
-   stand for both — the knob is showing the same daf anyway. */
-.slider-mark-label.hidden-by-knob {
-  visibility: hidden;
-}
-
-/* Staggered marks: when neighbors crowd each other, alternate which side of
-   the track they sit on. The "above" variants flip both the diamond and its
-   label to the top side so neither pair overlaps. */
-.slider-mark.mark-above {
-  /* Track is 4px tall; this puts the diamond's center ~10px above the track
-     top (translate(-50% Y) + top: -10px). */
-  top: -10px;
-}
-
+/* Staggered label: lifted above the track when its neighbor (a mark or the
+   knob) sits right next to it, so the two labels read as separate items
+   instead of overlapping. The diamond mark itself stays on the track. */
 .slider-mark-label.label-above {
   top: auto;
   bottom: calc(100% + 8px);

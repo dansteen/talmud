@@ -128,9 +128,11 @@ function applyTransform(animated = false) {
 //   bbox_right     = (textBbox.x + textBbox.w) * renderScale
 // Constraint: bbox_left ≤ visible_left  AND  visible_right ≤ bbox_right.
 // Whitespace breathing room (in screen pixels) between the text bbox edge
-// and the screen edge. Hard zero — the bbox edge is the pan limit, and at
-// minimum zoom the bbox snaps to centered with even gaps on each side.
-const EDGE_MARGIN_PX = 0;
+// and the screen edge — applied only when zoomed in (bbox wider than the
+// viewport). At full zoom-out, the bbox sits narrower than the viewport and
+// constrainView ignores the margin in favor of centering, so there's no
+// leftover slack to pan into when fully zoomed out.
+const EDGE_MARGIN_PX = 24;
 
 // Last `marginPx` passed to constrainView — used as the default for callers
 // that don't pass one explicitly (e.g., scheduleQualityRender, which fires
@@ -154,18 +156,31 @@ function constrainView(marginPx) {
   const bT = textBbox.y * eff;
   const bB = (textBbox.y + textBbox.h) * eff;
 
-  // With margin, allow the bbox edge to sit `marginPx` inside the screen edge.
-  const xMax = -bL + marginPx;
-  const xMin = window.innerWidth - bR - marginPx;
-  view.x = (xMin > xMax)
-    ? (xMin + xMax) / 2  // bbox narrower than viewport — center it
-    : Math.max(xMin, Math.min(xMax, view.x));
+  // Two phases per axis:
+  //   - bbox narrower than viewport (zoomed out): center the bbox, ignore
+  //     margin. This avoids leftover pan slack at full zoom-out.
+  //   - bbox wider than viewport (zoomed in): clamp with the margin so
+  //     pan/zoom near the page edge keeps a sliver of whitespace between
+  //     the text and the screen edge.
+  const xStrictMax = -bL;
+  const xStrictMin = window.innerWidth - bR;
+  if (xStrictMin > xStrictMax) {
+    view.x = (xStrictMin + xStrictMax) / 2;
+  } else {
+    const xMax = xStrictMax + marginPx;
+    const xMin = xStrictMin - marginPx;
+    view.x = Math.max(xMin, Math.min(xMax, view.x));
+  }
 
-  const yMax = -bT + marginPx;
-  const yMin = window.innerHeight - bB - marginPx;
-  view.y = (yMin > yMax)
-    ? (yMin + yMax) / 2
-    : Math.max(yMin, Math.min(yMax, view.y));
+  const yStrictMax = -bT;
+  const yStrictMin = window.innerHeight - bB;
+  if (yStrictMin > yStrictMax) {
+    view.y = (yStrictMin + yStrictMax) / 2;
+  } else {
+    const yMax = yStrictMax + marginPx;
+    const yMin = yStrictMin - marginPx;
+    view.y = Math.max(yMin, Math.min(yMax, view.y));
+  }
 }
 
 async function renderAtScale(s) {

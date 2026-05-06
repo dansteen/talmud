@@ -521,6 +521,21 @@ button {
   visibility: hidden;
 }
 
+/* Staggered marks: when neighbors crowd each other, alternate which side of
+   the track they sit on. The "above" variants flip both the diamond and its
+   label to the top side so neither pair overlaps. */
+.slider-mark.mark-above {
+  /* Track is 4px tall; this puts the diamond's center ~10px above the track
+     top (translate(-50% Y) + top: -10px). */
+  top: -10px;
+}
+
+.slider-mark-label.label-above {
+  top: auto;
+  bottom: calc(100% + 8px);
+  margin-top: 0;
+}
+
 .slider-knob {
   position: absolute;
   top: 50%;

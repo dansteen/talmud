@@ -434,22 +434,35 @@ function updateSliderRow(row, slug, state) {
   knobLabel.style.insetInlineStart = pctStr;
 
   // Marks (anchor + trail entries for this slug). Each mark renders as a
-  // diamond + a label below it; both are siblings of the knob.
+  // diamond + a label below the track. When neighboring marks would crowd
+  // each other (label widths overlap in track-pct space), we alternate
+  // them above and below the track so they read cleanly.
   for (const m of [...row.querySelectorAll('.slider-mark, .slider-mark-label')]) {
     m.remove();
   }
   const track = row.querySelector('.slider-track');
   const marks = marksForMasechta(slug);
-  // Hide any mark label that's close enough to the knob's position that the
-  // two label texts would collide. Threshold is in percent of track length.
   const labelOverlapPct = labelOverlapThreshold(track);
-  for (const m of marks) {
+  // Sort by position so the stagger pass sees them left-to-right.
+  const sortedMarks = [...marks].sort((a, b) =>
+    amudToIndex(a.daf, a.amud) - amudToIndex(b.daf, b.amud)
+  );
+  let lastSide = 'below';
+  let lastPct = -Infinity;
+  for (const m of sortedMarks) {
     const mIdx = amudToIndex(m.daf, m.amud);
     const mPct = last === 0 ? 0 : mIdx / last;
     const pctStr = (mPct * 100) + '%';
+    // First mark stays "below" (default). Each subsequent mark flips to the
+    // opposite side from its predecessor whenever the predecessor is too
+    // close to fit a non-overlapping label.
+    const overlapsPrev = (mPct - lastPct) < labelOverlapPct;
+    const side = overlapsPrev
+      ? (lastSide === 'below' ? 'above' : 'below')
+      : 'below';
 
     const dot = document.createElement('div');
-    dot.className = 'slider-mark';
+    dot.className = side === 'above' ? 'slider-mark mark-above' : 'slider-mark';
     dot.style.insetInlineStart = pctStr;
     dot.addEventListener('pointerdown', e => e.stopPropagation());
     dot.addEventListener('click', e => {
@@ -458,15 +471,23 @@ function updateSliderRow(row, slug, state) {
     });
 
     const lbl = document.createElement('span');
-    lbl.className = 'slider-mark-label';
+    lbl.className = side === 'above'
+      ? 'slider-mark-label label-above'
+      : 'slider-mark-label';
     lbl.style.insetInlineStart = pctStr;
     lbl.textContent = dafLabel(m.daf, m.amud);
-    if (Math.abs(mPct - pct) < labelOverlapPct) {
+    // The knob's label sits below the track. Only hide a "below" mark's
+    // label when the knob is right on top of it — "above" marks live on
+    // the other side and don't conflict.
+    if (side === 'below' && Math.abs(mPct - pct) < labelOverlapPct) {
       lbl.classList.add('hidden-by-knob');
     }
 
     track.insertBefore(dot, knob);
     track.insertBefore(lbl, knob);
+
+    lastSide = side;
+    lastPct = mPct;
   }
 }
 

@@ -80,6 +80,10 @@ const EMPTY_SESSION = {
   // when the user dives away from it.
   freshOpens: [],
   marks: { anchor: null, trail: [], anchorEnteredAt: null },
+  // Saved zoom + center per visited page. Keyed by `${slug}:${daf}:${amud}`.
+  // Cleared when a masechta closes or marks clear (10-min anchor timer).
+  // Each entry is { effScale, centerX, centerY } in PDF-point coords.
+  viewStates: {},
 };
 
 export function loadSession() {
@@ -96,6 +100,7 @@ export function loadSession() {
         trail: Array.isArray(raw.marks?.trail) ? raw.marks.trail : [],
         anchorEnteredAt: raw.marks?.anchorEnteredAt || null,
       },
+      viewStates: raw.viewStates || {},
     };
   } catch { return null; }
 }

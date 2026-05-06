@@ -117,6 +117,12 @@ export function closeMasechta(slug) {
   }
   state.marks.trail = state.marks.trail.filter(m => m.slug !== slug);
 
+  // Drop saved zoom/position state for the closed masechta's pages.
+  const prefix = `${slug}:`;
+  state.viewStates = Object.fromEntries(
+    Object.entries(state.viewStates).filter(([k]) => !k.startsWith(prefix))
+  );
+
   if (closingCurrent) {
     // Switch to the masechta that was before this one in the list
     // (or the next one if it was first)
@@ -201,8 +207,32 @@ function startAnchorTimerIfAtAnchor() {
 
 export function clearMarks() {
   state.marks = { anchor: null, trail: [], anchorEnteredAt: null };
+  // The "dive" is over — also forget per-page zoom states so the next
+  // navigation starts clean (default home view per page).
+  state.viewStates = {};
   cancelAnchorTimer();
   notify();
+}
+
+// ── Per-page view state (zoom + center, restored on page nav) ──
+
+function viewStateKey(slug, daf, amud) {
+  return `${slug}:${daf}:${amud}`;
+}
+
+export function saveViewState(slug, daf, amud, vs) {
+  if (!vs) return;
+  state.viewStates = {
+    ...state.viewStates,
+    [viewStateKey(slug, daf, amud)]: vs,
+  };
+  // Persist without firing subscribers — view state changes don't affect
+  // the drawer / sliders, so there's no point in re-rendering the UI.
+  saveSession(state);
+}
+
+export function getViewState(slug, daf, amud) {
+  return state.viewStates[viewStateKey(slug, daf, amud)] ?? null;
 }
 
 // Re-arm the timer on app load if we restored a session sitting at the anchor

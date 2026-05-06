@@ -127,17 +127,19 @@ function applyTransform(animated = false) {
 //   bbox_left      = textBbox.x * renderScale
 //   bbox_right     = (textBbox.x + textBbox.w) * renderScale
 // Constraint: bbox_left ≤ visible_left  AND  visible_right ≤ bbox_right.
+// Whitespace breathing room (in screen pixels) between the text bbox edge
+// and the screen edge. Applied for both pinch/pan and animated transitions
+// like double-tap zoom — the visual feel is consistent across gestures.
+const EDGE_MARGIN_PX = 24;
+
 // Last `marginPx` passed to constrainView — used as the default for callers
 // that don't pass one explicitly (e.g., scheduleQualityRender, which fires
-// 350ms after a settled gesture and shouldn't undo whatever margin the
-// previous animateTo set).
-let lastConstrainMargin = 0;
+// after a settled gesture and shouldn't undo whatever margin was in effect).
+let lastConstrainMargin = EDGE_MARGIN_PX;
 
 // Clamp view.scale (no-pinch-out-past-fit) and view.x/view.y so the visible
 // viewport stays within the bbox. `marginPx` allows that many screen pixels
-// of empty area beyond the bbox edge — used by animateTo (double-tap zoom)
-// so a tap near the page edge doesn't push the text flush against the
-// screen edge. Pinch/pan calls with marginPx=0 (strict).
+// of empty area beyond the bbox edge.
 function constrainView(marginPx) {
   if (marginPx === undefined) marginPx = lastConstrainMargin;
   else lastConstrainMargin = marginPx;
@@ -197,7 +199,10 @@ async function renderAtScale(s) {
   renderTask = null;
 }
 
-// After a gesture settles, re-render at higher resolution if needed
+// After a gesture settles, re-render at higher resolution. Short debounce so
+// the user only stares at the CSS-upscaled (blurry) bitmap briefly before the
+// crisp re-render replaces it. clearTimeout cancels any in-flight schedule
+// when a new gesture starts.
 let qualityTimer = null;
 export function scheduleQualityRender() {
   clearTimeout(qualityTimer);
@@ -218,10 +223,10 @@ export function scheduleQualityRender() {
     view.y = prevY;
     constrainView();
     applyTransform(false);
-  }, 350);
+  }, 80);
 }
 
-export async function loadPage(url, slug, daf, amud, onRegionsReady) {
+export async function loadPage(url, savedViewState = null) {
   regions = null;
   // No region detection right now — keep the pending-dot indicator hidden.
   document.getElementById('region-pending').classList.add('hidden');
@@ -251,31 +256,43 @@ export async function loadPage(url, slug, daf, amud, onRegionsReady) {
   textItems = data.items;
   textBbox = data.textBbox;
 
-  await renderAtScale(fitScale());
-
-  // Position so the text bbox is centered in the viewport. Constraint then
-  // snaps any drift (no-op in practice when scale=1).
-  view.scale = 1;
-  view.x = window.innerWidth  / 2 - (textBbox.x + textBbox.w / 2) * renderScale;
-  view.y = window.innerHeight / 2 - (textBbox.y + textBbox.h / 2) * renderScale;
+  // If we have a saved zoom/center for this page, render at that scale and
+  // place the saved center at the screen center. Otherwise default to home
+  // (text bbox fit).
+  if (savedViewState && savedViewState.effScale > 0) {
+    await renderAtScale(savedViewState.effScale);
+    view.scale = 1;
+    view.x = window.innerWidth  / 2 - savedViewState.centerX * renderScale;
+    view.y = window.innerHeight / 2 - savedViewState.centerY * renderScale;
+  } else {
+    await renderAtScale(fitScale());
+    view.scale = 1;
+    view.x = window.innerWidth  / 2 - (textBbox.x + textBbox.w / 2) * renderScale;
+    view.y = window.innerHeight / 2 - (textBbox.y + textBbox.h / 2) * renderScale;
+  }
   constrainView();
   applyTransform(false);
-
-  // Region detection callback is no-op for now; gestures fall back to a
-  // generic double-tap zoom.
-  onRegionsReady?.(null);
 }
 
-// `marginPx` allows the animated transform to leave that many pixels of empty
-// area beyond the bbox edge — useful for double-tap zoom near the page edge,
-// so the target text isn't pushed flush against the screen edge. Pinch/pan
-// stays strictly bbox-constrained (it calls constrainView() with marginPx=0
-// via applyDelta).
-export function animateTo(targetX, targetY, targetScale, onDone, marginPx = 0) {
+// Snapshot of the current view in PDF-coordinate units that survives the
+// canvas being re-rendered at a different renderScale. Saved per-page so
+// switching back restores the user's last zoom + position.
+export function getViewState() {
+  if (!textBbox) return null;
+  const eff = renderScale * view.scale;
+  if (eff <= 0) return null;
+  return {
+    effScale: eff,
+    centerX: (window.innerWidth  / 2 - view.x) / eff,
+    centerY: (window.innerHeight / 2 - view.y) / eff,
+  };
+}
+
+export function animateTo(targetX, targetY, targetScale, onDone) {
   view.x = targetX;
   view.y = targetY;
   view.scale = targetScale;
-  constrainView(marginPx);
+  constrainView(EDGE_MARGIN_PX);
   applyTransform(true);
 
   canvas.addEventListener('transitionend', function handler() {
@@ -395,10 +412,9 @@ export function applyDelta(dx, dy, dScale, originX, originY) {
   }
   view.x += dx;
   view.y += dy;
-  // Pinch/pan is strict (option 2): no empty area visible. Any snap from
-  // a prior animateTo's margin happens during the user's active gesture
-  // and is therefore masked.
-  constrainView(0);
+  // Same edge margin as animated transitions — keeps the visual feel
+  // consistent whether the user is pinching or double-tap zooming.
+  constrainView(EDGE_MARGIN_PX);
   applyTransform(false);
 }
 

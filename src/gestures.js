@@ -10,10 +10,6 @@ import { getReadingFontPx, setReadingFontPx } from './storage.js';
 // the user hasn't pinched yet. Comfortable Hebrew reading size on a phone.
 const DEFAULT_READING_FONT_PX = 32;
 const DOUBLE_TAP_HIT_RADIUS_PX = 30;
-// Whitespace breathing room (in screen pixels) to leave between the text
-// bbox edge and the screen edge when double-tap zooming near the page edge.
-// Pinch/pan stays strict — only animated transitions get this margin.
-const DOUBLE_TAP_EDGE_MARGIN_PX = 24;
 
 // Active touches: identifier → {x, y}
 //
@@ -205,26 +201,23 @@ function handleTap(clientX, clientY) {
 }
 
 function handleDoubleTap(clientX, clientY) {
-  // Already zoomed in → second double-tap returns home.
-  if (zoomed) {
-    goHome();
-    return;
-  }
-
-  // Smart zoom: scale so the tapped text appears at the user's preferred
-  // on-screen reading size. The size is whatever the last pinch settled at.
+  // If a text item is near the tap, smart-zoom to it at the user's preferred
+  // reading size — regardless of whether we're already zoomed. Tapping a new
+  // font size should re-zoom to that text's appropriate scale, not toggle
+  // home.
   const item = findItemAtPoint(clientX, clientY, DOUBLE_TAP_HIT_RADIUS_PX);
-  if (!item) {
-    // Nothing close to the tap — ignore the gesture rather than guessing.
+  if (item) {
+    const targetPx = getReadingFontPx() ?? DEFAULT_READING_FONT_PX;
+    const target = transformForFontSize(clientX, clientY, item.fontSize, targetPx);
+    if (!target) return;
+    zoomed = true;
+    animateTo(target.x, target.y, target.scale);
     return;
   }
 
-  const targetPx = getReadingFontPx() ?? DEFAULT_READING_FONT_PX;
-  const target = transformForFontSize(clientX, clientY, item.fontSize, targetPx);
-  if (!target) return;
-
-  zoomed = true;
-  animateTo(target.x, target.y, target.scale, null, DOUBLE_TAP_EDGE_MARGIN_PX);
+  // No text near the tap — interpret as "back to fit". When already at home
+  // this is a visual no-op.
+  goHome();
 }
 
 function goHome() {

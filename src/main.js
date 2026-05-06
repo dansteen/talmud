@@ -1,4 +1,4 @@
-import { loadPage } from './viewer.js';
+import { loadPage, getViewState } from './viewer.js';
 import { initGestures, returnHome } from './gestures.js';
 import {
   initNav, readUrlLocation, pushUrlLocation, clearUrlLocation,
@@ -9,7 +9,7 @@ import {
 } from './tractates.js';
 import {
   getState, navigateTo as sessionNavigateTo, openMasechta, rehydrateTimers,
-  currentPosition,
+  currentPosition, saveViewState, getViewState as sessionGetViewState,
 } from './session.js';
 import { initDrawer } from './drawer.js';
 import { getLastLocation, setLastLocation } from './storage.js';
@@ -17,6 +17,9 @@ import { getLastLocation, setLastLocation } from './storage.js';
 const loading = document.getElementById('loading');
 const viewerEl = document.getElementById('viewer');
 
+// `slug:daf:amud` of the page currently rendered (or null if welcome). Used
+// both for short-circuiting redundant loads and for saving the per-page
+// zoom/position when the user navigates away.
 let currentLoadKey = null;
 
 // ── Page loader ──
@@ -38,8 +41,16 @@ async function loadAt(slug, daf, amud) {
 
   const key = `${slug}:${c.daf}:${c.amud}`;
   if (key === currentLoadKey) return;
-  currentLoadKey = key;
 
+  // Snapshot the outgoing page's zoom + center so a return-trip restores it.
+  if (currentLoadKey) {
+    const [oSlug, oDafStr, oAmud] = currentLoadKey.split(':');
+    const oDaf = parseInt(oDafStr, 10);
+    const vs = getViewState();
+    if (vs) saveViewState(oSlug, oDaf, oAmud, vs);
+  }
+
+  currentLoadKey = key;
   pushUrlLocation(slug, c.daf, c.amud);
   setLastLocation(slug, c.daf, c.amud);
 
@@ -54,7 +65,8 @@ async function loadAt(slug, daf, amud) {
 
   try {
     const url = apiUrl(t, c.daf, c.amud);
-    await loadPage(url, slug, c.daf, c.amud, () => {});
+    const saved = sessionGetViewState(slug, c.daf, c.amud);
+    await loadPage(url, saved);
   } catch (err) {
     console.error('Failed to load page:', err);
   } finally {

@@ -283,6 +283,9 @@ function onPickTractate(slug) {
     openMasechta(slug);
     onNavigate?.(slug, 2, 'a');
     showSliders();
+    // Bring the new slider into view so the user can immediately scrub it
+    // without hunting through a long stack.
+    scrollSliderIntoView(slug);
   }
 }
 
@@ -339,6 +342,16 @@ function renderSliders(state) {
   sliderStackEl.appendChild(fragment);
 }
 
+function scrollSliderIntoView(slug) {
+  // render() runs synchronously via the session subscriber, so the row exists
+  // by the time we get here. Defer one frame so the layout/scroll height is
+  // settled before scrolling.
+  requestAnimationFrame(() => {
+    const row = sliderStackEl.querySelector(`.slider-row[data-slug="${slug}"]`);
+    row?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+}
+
 function renderPickerSelection(state) {
   for (const tile of pickerListEl.querySelectorAll('.picker-tile')) {
     tile.classList.toggle('open', state.open.includes(tile.dataset.slug));
@@ -389,6 +402,7 @@ function createSliderRow(slug) {
     if (!page) return;
     switchTo(slug);
     onNavigate?.(slug, page.daf, page.amud);
+    close();
   });
 
   attachSliderInteraction(row, slug);

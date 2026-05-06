@@ -128,9 +128,9 @@ function applyTransform(animated = false) {
 //   bbox_right     = (textBbox.x + textBbox.w) * renderScale
 // Constraint: bbox_left ≤ visible_left  AND  visible_right ≤ bbox_right.
 // Whitespace breathing room (in screen pixels) between the text bbox edge
-// and the screen edge. Applied for both pinch/pan and animated transitions
-// like double-tap zoom — the visual feel is consistent across gestures.
-const EDGE_MARGIN_PX = 24;
+// and the screen edge. Hard zero — the bbox edge is the pan limit, and at
+// minimum zoom the bbox snaps to centered with even gaps on each side.
+const EDGE_MARGIN_PX = 0;
 
 // Last `marginPx` passed to constrainView — used as the default for callers
 // that don't pass one explicitly (e.g., scheduleQualityRender, which fires

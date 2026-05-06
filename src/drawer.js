@@ -113,6 +113,11 @@ function renderLangPickers() {
 let isOpen = false;
 let inPickerMode = false;
 
+// Slider list's vertical scroll position, captured at close time and
+// restored on the next open. The drawer's display:none toggle would
+// otherwise reset scrollTop on the inner overflow container.
+let savedSliderScroll = 0;
+
 function open(picker = false) {
   // If nothing is open, force picker mode — empty sliders view is useless.
   if (getState().open.length === 0) picker = true;
@@ -125,9 +130,21 @@ function open(picker = false) {
   drawerEl.classList.add('open');
   scrimEl.classList.add('visible');
   isOpen = true;
+
+  // Restore the slider list's scroll to where it was on the last close.
+  // requestAnimationFrame waits for layout so scrollTop assignments take.
+  if (!inPickerMode && sliderStackEl) {
+    requestAnimationFrame(() => {
+      sliderStackEl.scrollTop = savedSliderScroll;
+    });
+  }
 }
 
 function close() {
+  // Capture the slider list's scroll position before the drawer hides — the
+  // browser resets scrollTop when the element transitions to display:none,
+  // so we'll restore from this on the next open.
+  if (sliderStackEl) savedSliderScroll = sliderStackEl.scrollTop;
   drawerEl.classList.remove('open');
   scrimEl.classList.remove('visible');
   isOpen = false;

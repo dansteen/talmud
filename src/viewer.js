@@ -174,11 +174,35 @@ async function renderAtScale(s) {
 
   const dpr = window.devicePixelRatio || 1;
   const viewport = currentPdfPage.getViewport({ scale: s * dpr });
+  const newWidth = Math.round(viewport.width);
+  const newHeight = Math.round(viewport.height);
 
-  canvas.width = Math.round(viewport.width);
-  canvas.height = Math.round(viewport.height);
+  // Render to a temporary off-DOM canvas first. The visible canvas keeps its
+  // current bitmap during the render — without this, setting canvas.width
+  // before render would clear the bitmap and the user would see a blank
+  // canvas for the 100–300ms it takes pdf.js to paint (the "blink").
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = newWidth;
+  tempCanvas.height = newHeight;
+  const tempCtx = tempCanvas.getContext('2d');
+
+  renderTask = currentPdfPage.render({ canvasContext: tempCtx, viewport });
+  try {
+    await renderTask.promise;
+  } catch (e) {
+    if (e?.name !== 'RenderingCancelledException') throw e;
+    return;
+  }
+  renderTask = null;
+
+  // Atomic swap. Resizing canvas.width clears the bitmap; immediately
+  // drawImage'ing the new bitmap before yielding back to the browser means
+  // the browser only paints once with the final state — no blank frame.
+  canvas.width = newWidth;
+  canvas.height = newHeight;
   canvas.style.width = (pageW * s) + 'px';
   canvas.style.height = (pageH * s) + 'px';
+  ctx.drawImage(tempCanvas, 0, 0);
 
   view.cssW = pageW * s;
   view.cssH = pageH * s;
@@ -188,15 +212,6 @@ async function renderAtScale(s) {
     overlay.style.width = view.cssW + 'px';
     overlay.style.height = view.cssH + 'px';
   }
-
-  renderTask = currentPdfPage.render({ canvasContext: ctx, viewport });
-  try {
-    await renderTask.promise;
-  } catch (e) {
-    if (e?.name !== 'RenderingCancelledException') throw e;
-    return;
-  }
-  renderTask = null;
 }
 
 // After a gesture settles, re-render at higher resolution. Short debounce so
@@ -401,6 +416,20 @@ export function transformForFontSize(clientX, clientY, fontSizePdf, targetFontPx
     x: window.innerWidth  / 2 - localX * targetViewScale,
     y: window.innerHeight / 2 - localY * targetViewScale,
     scale: targetViewScale,
+  };
+}
+
+// Compute a target view transform that keeps the current scale and shifts so
+// the screen point (clientX, clientY) ends up at viewport center. Used by
+// double-tap "scroll" — same font size as current zoom, just re-center.
+export function transformForCentering(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  const localX = (clientX - r.left) / view.scale;
+  const localY = (clientY - r.top)  / view.scale;
+  return {
+    x: window.innerWidth  / 2 - localX * view.scale,
+    y: window.innerHeight / 2 - localY * view.scale,
+    scale: view.scale,
   };
 }
 

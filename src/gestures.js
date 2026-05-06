@@ -1,7 +1,7 @@
 import {
   view, canvas,
   applyDelta, animateTo, scheduleQualityRender,
-  transformForHome, transformForFontSize,
+  transformForHome, transformForFontSize, transformForCentering,
   findItemAtPoint, effectiveScale,
 } from './viewer.js';
 import { getReadingFontPx, setReadingFontPx } from './storage.js';
@@ -10,6 +10,15 @@ import { getReadingFontPx, setReadingFontPx } from './storage.js';
 // the user hasn't pinched yet. Comfortable Hebrew reading size on a phone.
 const DEFAULT_READING_FONT_PX = 32;
 const DOUBLE_TAP_HIT_RADIUS_PX = 30;
+
+// "Same size" tolerance: two PDF font sizes are considered the same if they
+// agree within this fraction. 25% covers natural per-glyph variation while
+// still distinguishing Gemara from Rashi/commentary.
+const SAME_SIZE_TOLERANCE = 0.25;
+
+// Center region of the screen for the 9-region double-tap model. A tap is
+// "center" if it's within the middle third of the screen on both axes.
+const CENTER_REGION_FRAC = 1 / 3;
 
 // Active touches: identifier → {x, y}
 //
@@ -201,23 +210,56 @@ function handleTap(clientX, clientY) {
 }
 
 function handleDoubleTap(clientX, clientY) {
-  // If a text item is near the tap, smart-zoom to it at the user's preferred
-  // reading size — regardless of whether we're already zoomed. Tapping a new
-  // font size should re-zoom to that text's appropriate scale, not toggle
-  // home.
   const item = findItemAtPoint(clientX, clientY, DOUBLE_TAP_HIT_RADIUS_PX);
-  if (item) {
-    const targetPx = getReadingFontPx() ?? DEFAULT_READING_FONT_PX;
-    const target = transformForFontSize(clientX, clientY, item.fontSize, targetPx);
-    if (!target) return;
-    zoomed = true;
-    animateTo(target.x, target.y, target.scale);
+  if (!item) {
+    // Tap landed off any text — preserve the old escape: home if zoomed,
+    // no-op when already at home.
+    if (zoomed) goHome();
     return;
   }
 
-  // No text near the tap — interpret as "back to fit". When already at home
-  // this is a visual no-op.
-  goHome();
+  const targetPx = getReadingFontPx() ?? DEFAULT_READING_FONT_PX;
+  const intendedFontPdf = currentIntendedFontPdf(targetPx);
+  const sameSize = isSameFontSize(item.fontSize, intendedFontPdf);
+  const inCenter = isCenterTap(clientX, clientY);
+
+  // Center + same size = "I'm done with this dive, zoom out"
+  if (sameSize && inCenter) {
+    goHome();
+    return;
+  }
+
+  // Same size, off-center = scroll in the direction of the tap (re-center on
+  // tapped point, keep scale). Different size = zoom to the new font's
+  // preferred screen size, also re-centered on the tap.
+  const target = sameSize
+    ? transformForCentering(clientX, clientY)
+    : transformForFontSize(clientX, clientY, item.fontSize, targetPx);
+  if (!target) return;
+
+  zoomed = true;
+  animateTo(target.x, target.y, target.scale);
+}
+
+// Given the current view, what PDF font size would be displayed at the user's
+// preferred on-screen reading size? Tells us "the font size this zoom is
+// calibrated for", which we can then compare against a tapped item's font.
+function currentIntendedFontPdf(targetPx) {
+  const eff = effectiveScale();
+  if (eff <= 0) return Infinity;
+  return targetPx / eff;
+}
+
+function isSameFontSize(a, b) {
+  if (!a || !b || !isFinite(a) || !isFinite(b)) return false;
+  return Math.abs(a / b - 1) < SAME_SIZE_TOLERANCE;
+}
+
+function isCenterTap(clientX, clientY) {
+  const w = window.innerWidth, h = window.innerHeight;
+  const dx = Math.abs(clientX - w / 2);
+  const dy = Math.abs(clientY - h / 2);
+  return dx < w * CENTER_REGION_FRAC / 2 && dy < h * CENTER_REGION_FRAC / 2;
 }
 
 function goHome() {

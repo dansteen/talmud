@@ -10,6 +10,10 @@ import { getReadingFontPx, setReadingFontPx } from './storage.js';
 // the user hasn't pinched yet. Comfortable Hebrew reading size on a phone.
 const DEFAULT_READING_FONT_PX = 32;
 const DOUBLE_TAP_HIT_RADIUS_PX = 30;
+// Whitespace breathing room (in screen pixels) to leave between the text
+// bbox edge and the screen edge when double-tap zooming near the page edge.
+// Pinch/pan stays strict — only animated transitions get this margin.
+const DOUBLE_TAP_EDGE_MARGIN_PX = 24;
 
 // Active touches: identifier → {x, y}
 //
@@ -220,7 +224,7 @@ function handleDoubleTap(clientX, clientY) {
   if (!target) return;
 
   zoomed = true;
-  animateTo(target.x, target.y, target.scale);
+  animateTo(target.x, target.y, target.scale, null, DOUBLE_TAP_EDGE_MARGIN_PX);
 }
 
 function goHome() {

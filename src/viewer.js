@@ -12,10 +12,10 @@ let pageW = 1;       // natural PDF width (PDF points)
 let pageH = 1;       // natural PDF height (PDF points)
 let renderScale = 1; // scale at which the canvas was last rendered
 
-// Bounding box used for "fit" scale and the pan/zoom constraint. This is the
-// text bbox extended out to the natural page margins on top/left/right, with
-// the bottom capped so the page's anomalous empty area stays off-screen.
-let viewBbox = null;
+// Bounding box of all text on the current page in viewport-coordinate units
+// (y top-down). Tight to the text — drives "fit" scale and the pan/zoom
+// constraint so the empty bottom of the daf stays off-screen during pinch/pan.
+let textBbox = null;
 
 // Per-item rectangles + font size in viewport-coordinate units (y top-down).
 // Used by findItemAtPoint() for smart double-tap zoom.
@@ -101,34 +101,12 @@ async function computeTextData(pdfPage) {
   };
 }
 
-// Extend the tight text bbox to include natural page margins. Top/left/right
-// expand to the full page (since users want to see the natural whitespace
-// around the text). Bottom is capped at "text bottom + margin equal to top
-// margin" so the daf's anomalous empty region at the bottom stays cropped.
-function computeViewBbox(textBbox, pageW, pageH) {
-  if (!textBbox) return { x: 0, y: 0, w: pageW, h: pageH };
-
-  // If text-bbox already covers the page (the fallback path returns full
-  // page), nothing to extend.
-  if (textBbox.w >= pageW * 0.99 && textBbox.h >= pageH * 0.99) {
-    return { x: 0, y: 0, w: pageW, h: pageH };
-  }
-
-  const topMargin = Math.max(0, textBbox.y);
-  // Match top margin on the bottom; floor at 5% of pageH so very small top
-  // margins don't leave the bottom edge crowding the text.
-  const bottomMargin = Math.max(topMargin, pageH * 0.05);
-  const h = Math.min(pageH, textBbox.y + textBbox.h + bottomMargin);
-
-  return { x: 0, y: 0, w: pageW, h };
-}
-
 // ── Scale + transform helpers ────────────────────────────────────────────
 
-// Scale that fits the view bbox (or the full page if no bbox) within the viewport.
+// Scale that fits the text bbox (or the full page if no bbox) within the viewport.
 function fitScale() {
-  const w = viewBbox?.w ?? pageW;
-  const h = viewBbox?.h ?? pageH;
+  const w = textBbox?.w ?? pageW;
+  const h = textBbox?.h ?? pageH;
   return Math.min(window.innerWidth / w, window.innerHeight / h) * 0.98;
 }
 
@@ -149,30 +127,40 @@ function applyTransform(animated = false) {
 //   bbox_left      = textBbox.x * renderScale
 //   bbox_right     = (textBbox.x + textBbox.w) * renderScale
 // Constraint: bbox_left ≤ visible_left  AND  visible_right ≤ bbox_right.
-function constrainView() {
-  if (!viewBbox) return;
+// Last `marginPx` passed to constrainView — used as the default for callers
+// that don't pass one explicitly (e.g., scheduleQualityRender, which fires
+// 350ms after a settled gesture and shouldn't undo whatever margin the
+// previous animateTo set).
+let lastConstrainMargin = 0;
 
-  // Minimum view.scale = the scale at which the bbox just fills the screen.
-  // Pinching out below this would otherwise reveal blank page area.
+// Clamp view.scale (no-pinch-out-past-fit) and view.x/view.y so the visible
+// viewport stays within the bbox. `marginPx` allows that many screen pixels
+// of empty area beyond the bbox edge — used by animateTo (double-tap zoom)
+// so a tap near the page edge doesn't push the text flush against the
+// screen edge. Pinch/pan calls with marginPx=0 (strict).
+function constrainView(marginPx) {
+  if (marginPx === undefined) marginPx = lastConstrainMargin;
+  else lastConstrainMargin = marginPx;
+  if (!textBbox) return;
+
   const minViewScale = fitScale() / renderScale;
   if (view.scale < minViewScale) view.scale = minViewScale;
 
   const eff = renderScale * view.scale; // PDF-points → screen-pixels
-  const bL = viewBbox.x * eff;
-  const bR = (viewBbox.x + viewBbox.w) * eff;
-  const bT = viewBbox.y * eff;
-  const bB = (viewBbox.y + viewBbox.h) * eff;
+  const bL = textBbox.x * eff;
+  const bR = (textBbox.x + textBbox.w) * eff;
+  const bT = textBbox.y * eff;
+  const bB = (textBbox.y + textBbox.h) * eff;
 
-  // x bounds. xMax: tightest "you can't pan further right" position.
-  //          xMin: tightest "you can't pan further left" position.
-  const xMax = -bL;
-  const xMin = window.innerWidth - bR;
+  // With margin, allow the bbox edge to sit `marginPx` inside the screen edge.
+  const xMax = -bL + marginPx;
+  const xMin = window.innerWidth - bR - marginPx;
   view.x = (xMin > xMax)
     ? (xMin + xMax) / 2  // bbox narrower than viewport — center it
     : Math.max(xMin, Math.min(xMax, view.x));
 
-  const yMax = -bT;
-  const yMin = window.innerHeight - bB;
+  const yMax = -bT + marginPx;
+  const yMin = window.innerHeight - bB - marginPx;
   view.y = (yMin > yMax)
     ? (yMin + yMax) / 2
     : Math.max(yMin, Math.min(yMax, view.y));
@@ -259,17 +247,17 @@ export async function loadPage(url, slug, daf, amud, onRegionsReady) {
   // Compute text data (per-item rects + tight text bbox) before the first
   // render so we can render at the bbox-fit scale and have item info ready
   // for smart double-tap zoom. getTextContent is fast (typically <10ms).
-  const { textBbox, items } = await computeTextData(currentPdfPage);
-  textItems = items;
-  viewBbox = computeViewBbox(textBbox, pageW, pageH);
+  const data = await computeTextData(currentPdfPage);
+  textItems = data.items;
+  textBbox = data.textBbox;
 
   await renderAtScale(fitScale());
 
-  // Position so the view bbox is centered in the viewport. Constraint then
+  // Position so the text bbox is centered in the viewport. Constraint then
   // snaps any drift (no-op in practice when scale=1).
   view.scale = 1;
-  view.x = window.innerWidth  / 2 - (viewBbox.x + viewBbox.w / 2) * renderScale;
-  view.y = window.innerHeight / 2 - (viewBbox.y + viewBbox.h / 2) * renderScale;
+  view.x = window.innerWidth  / 2 - (textBbox.x + textBbox.w / 2) * renderScale;
+  view.y = window.innerHeight / 2 - (textBbox.y + textBbox.h / 2) * renderScale;
   constrainView();
   applyTransform(false);
 
@@ -278,11 +266,16 @@ export async function loadPage(url, slug, daf, amud, onRegionsReady) {
   onRegionsReady?.(null);
 }
 
-export function animateTo(targetX, targetY, targetScale, onDone) {
+// `marginPx` allows the animated transform to leave that many pixels of empty
+// area beyond the bbox edge — useful for double-tap zoom near the page edge,
+// so the target text isn't pushed flush against the screen edge. Pinch/pan
+// stays strictly bbox-constrained (it calls constrainView() with marginPx=0
+// via applyDelta).
+export function animateTo(targetX, targetY, targetScale, onDone, marginPx = 0) {
   view.x = targetX;
   view.y = targetY;
   view.scale = targetScale;
-  constrainView();
+  constrainView(marginPx);
   applyTransform(true);
 
   canvas.addEventListener('transitionend', function handler() {
@@ -313,13 +306,13 @@ export function transformForRegion(region, preferredScale) {
 }
 
 export function transformForHome() {
-  // Centered on the view bbox at fit-screen scale.
+  // Centered on the text bbox at fit-screen scale.
   const fit = fitScale();
   const visualScale = fit / renderScale;
-  const w = viewBbox?.w ?? pageW;
-  const h = viewBbox?.h ?? pageH;
-  const x0 = viewBbox?.x ?? 0;
-  const y0 = viewBbox?.y ?? 0;
+  const w = textBbox?.w ?? pageW;
+  const h = textBbox?.h ?? pageH;
+  const x0 = textBbox?.x ?? 0;
+  const y0 = textBbox?.y ?? 0;
   return {
     x: window.innerWidth  / 2 - (x0 + w / 2) * fit,
     y: window.innerHeight / 2 - (y0 + h / 2) * fit,
@@ -402,7 +395,10 @@ export function applyDelta(dx, dy, dScale, originX, originY) {
   }
   view.x += dx;
   view.y += dy;
-  constrainView();
+  // Pinch/pan is strict (option 2): no empty area visible. Any snap from
+  // a prior animateTo's margin happens during the user's active gesture
+  // and is therefore masked.
+  constrainView(0);
   applyTransform(false);
 }
 

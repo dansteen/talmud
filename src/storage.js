@@ -5,6 +5,27 @@ const PREFS_KEY = 'talmud:zoom_prefs';
 const LAST_LOC_KEY = 'talmud:last_location';
 const REGION_CACHE_KEY = 'talmud:regions:v14';
 const SESSION_KEY = 'talmud:session:v1';
+const READING_FONT_KEY = 'talmud:reading_font_px';
+
+// ── Preferred on-screen reading size (in CSS pixels) ──
+//
+// Updated whenever the user finishes a pinch-zoom, based on the font size at
+// the pinch midpoint × the effective scale. Drives smart double-tap zoom:
+// double-tapping on a piece of text scales the page so that text appears at
+// roughly the same on-screen size the user last preferred.
+
+export function getReadingFontPx() {
+  try {
+    const raw = localStorage.getItem(READING_FONT_KEY);
+    const n = raw == null ? NaN : parseFloat(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch { return null; }
+}
+
+export function setReadingFontPx(px) {
+  if (!Number.isFinite(px) || px <= 0) return;
+  try { localStorage.setItem(READING_FONT_KEY, String(px)); } catch { /* ignore */ }
+}
 
 function loadPrefs() {
   try { return JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); }

@@ -1,10 +1,15 @@
 import {
-  view, regions, canvas,
+  view, canvas,
   applyDelta, animateTo, scheduleQualityRender,
-  transformForRegion, transformForHome,
+  transformForHome, transformForFontSize,
+  findItemAtPoint, effectiveScale,
 } from './viewer.js';
-import { regionAtPoint } from './regions.js';
-import { getZoomPref, setZoomPref } from './storage.js';
+import { getReadingFontPx, setReadingFontPx } from './storage.js';
+
+// Default on-screen font size (CSS px) used by smart double-tap zoom when
+// the user hasn't pinched yet. Comfortable Hebrew reading size on a phone.
+const DEFAULT_READING_FONT_PX = 32;
+const DOUBLE_TAP_HIT_RADIUS_PX = 30;
 
 // Active touches: identifier → {x, y}
 //
@@ -31,8 +36,12 @@ const SWIPE_DISTANCE_PX = 60;
 
 // Two-finger pinch/pan state
 let prevMidX = 0, prevMidY = 0, prevDist = 0;
+// Last 2-finger midpoint seen — used at pinch end to read the font size at
+// the user's pinch center and persist their preferred reading size.
+let lastPinchMidX = 0, lastPinchMidY = 0;
+let didPinch = false;
 
-let zoomedRegion = null;
+let zoomed = false;
 
 let onPrev = null;
 let onNext = null;
@@ -95,6 +104,9 @@ function onTouchMove(e) {
     prevDist = s.dist;
     prevMidX = s.midX;
     prevMidY = s.midY;
+    lastPinchMidX = s.midX;
+    lastPinchMidY = s.midY;
+    didPinch = true;
     return;
   }
 
@@ -127,7 +139,18 @@ function onTouchEnd(e) {
   }
 
   if (touches.size === 0) {
-    if (zoomedRegion) setZoomPref(zoomedRegion.type, view.scale);
+    // Pinch settled — record the user's preferred on-screen reading size.
+    // We base it on the font of whatever was under the pinch midpoint at
+    // release, so "I pinched until Gemara was this size" or "I pinched
+    // until Rashi was this size" both translate cleanly to a single
+    // target screen size for future smart zooms.
+    if (didPinch) {
+      const item = findItemAtPoint(lastPinchMidX, lastPinchMidY, 60);
+      if (item) {
+        setReadingFontPx(item.fontSize * effectiveScale());
+      }
+      didPinch = false;
+    }
     scheduleQualityRender();
     prevDist = 0;
     gestureStartTime = 0;
@@ -178,43 +201,30 @@ function handleTap(clientX, clientY) {
 }
 
 function handleDoubleTap(clientX, clientY) {
-  const canvasRect = canvas.getBoundingClientRect();
-  const localX = (clientX - canvasRect.left) / view.scale;
-  const localY = (clientY - canvasRect.top) / view.scale;
-
-  if (!regions || regions.length === 0) {
-    if (zoomedRegion) {
-      goHome();
-    } else {
-      const s = 2.5;
-      animateTo(
-        window.innerWidth / 2 - localX * s,
-        window.innerHeight / 2 - localY * s,
-        s
-      );
-      zoomedRegion = { type: 'gemara' };
-    }
-    return;
-  }
-
-  const region = regionAtPoint(regions, localX, localY, view.cssW, view.cssH);
-
-  if (!region || zoomedRegion) {
+  // Already zoomed in → second double-tap returns home.
+  if (zoomed) {
     goHome();
     return;
   }
 
-  const prefScale = getZoomPref(region.type);
-  const target = transformForRegion(region, prefScale);
+  // Smart zoom: scale so the tapped text appears at the user's preferred
+  // on-screen reading size. The size is whatever the last pinch settled at.
+  const item = findItemAtPoint(clientX, clientY, DOUBLE_TAP_HIT_RADIUS_PX);
+  if (!item) {
+    // Nothing close to the tap — ignore the gesture rather than guessing.
+    return;
+  }
 
-  zoomedRegion = region;
-  animateTo(target.x, target.y, target.scale, () => {
-    setZoomPref(region.type, view.scale);
-  });
+  const targetPx = getReadingFontPx() ?? DEFAULT_READING_FONT_PX;
+  const target = transformForFontSize(clientX, clientY, item.fontSize, targetPx);
+  if (!target) return;
+
+  zoomed = true;
+  animateTo(target.x, target.y, target.scale);
 }
 
 function goHome() {
-  zoomedRegion = null;
+  zoomed = false;
   const { x, y, scale } = transformForHome();
   animateTo(x, y, scale);
 }
@@ -224,7 +234,7 @@ export function returnHome() {
 }
 
 export function isZoomed() {
-  return zoomedRegion !== null;
+  return zoomed;
 }
 
 export function initGestures({ prev, next } = {}) {

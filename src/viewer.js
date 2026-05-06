@@ -12,11 +12,14 @@ let pageW = 1;       // natural PDF width (PDF points)
 let pageH = 1;       // natural PDF height (PDF points)
 let renderScale = 1; // scale at which the canvas was last rendered
 
-// Bounding box of all text on the current page in viewport-coordinate units
-// (i.e., PDF points with y running top-down). Drives "fit" scale and the
-// pan/zoom constraint so the empty region of the page stays off-screen.
-// Falls back to the full page when computation fails.
-let textBbox = null;
+// Bounding box used for "fit" scale and the pan/zoom constraint. This is the
+// text bbox extended out to the natural page margins on top/left/right, with
+// the bottom capped so the page's anomalous empty area stays off-screen.
+let viewBbox = null;
+
+// Per-item rectangles + font size in viewport-coordinate units (y top-down).
+// Used by findItemAtPoint() for smart double-tap zoom.
+let textItems = [];
 
 // Visual transform applied to the canvas via CSS
 export const view = {
@@ -35,58 +38,97 @@ export let regions = null;
 let currentPdfPage = null;
 let renderTask = null;
 
-// ── Text-bbox computation ────────────────────────────────────────────────
+// ── Text-bbox + per-item computation ────────────────────────────────────
 
-async function computeTextBbox(pdfPage) {
+async function computeTextData(pdfPage) {
   const viewport = pdfPage.getViewport({ scale: 1 });
   const fullPage = { x: 0, y: 0, w: viewport.width, h: viewport.height };
+  const empty = { textBbox: fullPage, items: [] };
 
   let text;
   try { text = await pdfPage.getTextContent(); }
-  catch { return fullPage; }
-  if (!text?.items?.length) return fullPage;
+  catch { return empty; }
+  if (!text?.items?.length) return empty;
 
   // viewport.transform: [scaleX, skewY, skewX, scaleY, tx, ty] — converts PDF
-  // user-space coords (y-up) to viewport coords (y-down).
+  // user-space coords (y-up) to viewport coords (y-down). Assuming no rotation
+  // here (per design), scaleY < 0 so y flips.
   const v = viewport.transform;
+  const items = [];
   let xMin = Infinity, yMin = Infinity, xMax = -Infinity, yMax = -Infinity;
 
   for (const item of text.items) {
     if (!item.str) continue;
-    const x = item.transform[4];
-    const y = item.transform[5];
-    const w = item.width;
-    const h = item.height;
-    // Transform all four corners and take the AABB — handles rotation safely.
-    const corners = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+    const ix = item.transform[4];
+    const iy = item.transform[5];
+    const iw = item.width;
+    const ih = item.height;
+
+    // Transform all four corners → viewport AABB for this item.
+    const corners = [[ix, iy], [ix + iw, iy], [ix + iw, iy + ih], [ix, iy + ih]];
+    let cx0 = Infinity, cy0 = Infinity, cx1 = -Infinity, cy1 = -Infinity;
     for (const [px, py] of corners) {
       const vx = v[0] * px + v[2] * py + v[4];
       const vy = v[1] * px + v[3] * py + v[5];
-      if (vx < xMin) xMin = vx;
-      if (vx > xMax) xMax = vx;
-      if (vy < yMin) yMin = vy;
-      if (vy > yMax) yMax = vy;
+      if (vx < cx0) cx0 = vx;
+      if (vx > cx1) cx1 = vx;
+      if (vy < cy0) cy0 = vy;
+      if (vy > cy1) cy1 = vy;
     }
+    items.push({
+      x: cx0, y: cy0, w: cx1 - cx0, h: cy1 - cy0,
+      // Item height in viewport space ≈ font size in CSS px at scale 1.
+      fontSize: cy1 - cy0,
+    });
+
+    if (cx0 < xMin) xMin = cx0;
+    if (cx1 > xMax) xMax = cx1;
+    if (cy0 < yMin) yMin = cy0;
+    if (cy1 > yMax) yMax = cy1;
   }
 
-  if (!isFinite(xMin)) return fullPage;
+  if (!isFinite(xMin)) return empty;
 
   // Sanity: bbox must span at least a quarter of the page in each dimension.
-  // If not (broken metadata, decorative-only page, etc.), fall back.
   if ((xMax - xMin) < viewport.width * 0.25 ||
       (yMax - yMin) < viewport.height * 0.25) {
-    return fullPage;
+    return empty;
   }
 
-  return { x: xMin, y: yMin, w: xMax - xMin, h: yMax - yMin };
+  return {
+    textBbox: { x: xMin, y: yMin, w: xMax - xMin, h: yMax - yMin },
+    items,
+  };
+}
+
+// Extend the tight text bbox to include natural page margins. Top/left/right
+// expand to the full page (since users want to see the natural whitespace
+// around the text). Bottom is capped at "text bottom + margin equal to top
+// margin" so the daf's anomalous empty region at the bottom stays cropped.
+function computeViewBbox(textBbox, pageW, pageH) {
+  if (!textBbox) return { x: 0, y: 0, w: pageW, h: pageH };
+
+  // If text-bbox already covers the page (the fallback path returns full
+  // page), nothing to extend.
+  if (textBbox.w >= pageW * 0.99 && textBbox.h >= pageH * 0.99) {
+    return { x: 0, y: 0, w: pageW, h: pageH };
+  }
+
+  const topMargin = Math.max(0, textBbox.y);
+  // Match top margin on the bottom; floor at 5% of pageH so very small top
+  // margins don't leave the bottom edge crowding the text.
+  const bottomMargin = Math.max(topMargin, pageH * 0.05);
+  const h = Math.min(pageH, textBbox.y + textBbox.h + bottomMargin);
+
+  return { x: 0, y: 0, w: pageW, h };
 }
 
 // ── Scale + transform helpers ────────────────────────────────────────────
 
-// Scale that fits the text bbox (or the full page if no bbox) within the viewport.
+// Scale that fits the view bbox (or the full page if no bbox) within the viewport.
 function fitScale() {
-  const w = textBbox?.w ?? pageW;
-  const h = textBbox?.h ?? pageH;
+  const w = viewBbox?.w ?? pageW;
+  const h = viewBbox?.h ?? pageH;
   return Math.min(window.innerWidth / w, window.innerHeight / h) * 0.98;
 }
 
@@ -108,7 +150,7 @@ function applyTransform(animated = false) {
 //   bbox_right     = (textBbox.x + textBbox.w) * renderScale
 // Constraint: bbox_left ≤ visible_left  AND  visible_right ≤ bbox_right.
 function constrainView() {
-  if (!textBbox) return;
+  if (!viewBbox) return;
 
   // Minimum view.scale = the scale at which the bbox just fills the screen.
   // Pinching out below this would otherwise reveal blank page area.
@@ -116,10 +158,10 @@ function constrainView() {
   if (view.scale < minViewScale) view.scale = minViewScale;
 
   const eff = renderScale * view.scale; // PDF-points → screen-pixels
-  const bL = textBbox.x * eff;
-  const bR = (textBbox.x + textBbox.w) * eff;
-  const bT = textBbox.y * eff;
-  const bB = (textBbox.y + textBbox.h) * eff;
+  const bL = viewBbox.x * eff;
+  const bR = (viewBbox.x + viewBbox.w) * eff;
+  const bT = viewBbox.y * eff;
+  const bB = (viewBbox.y + viewBbox.h) * eff;
 
   // x bounds. xMax: tightest "you can't pan further right" position.
   //          xMin: tightest "you can't pan further left" position.
@@ -214,18 +256,20 @@ export async function loadPage(url, slug, daf, amud, onRegionsReady) {
   pageW = natural.width;
   pageH = natural.height;
 
-  // Compute text bbox before the first render so we can render at the
-  // bbox-fit scale (instead of full-page-fit). getTextContent is fast —
-  // typically a few ms.
-  textBbox = await computeTextBbox(currentPdfPage);
+  // Compute text data (per-item rects + tight text bbox) before the first
+  // render so we can render at the bbox-fit scale and have item info ready
+  // for smart double-tap zoom. getTextContent is fast (typically <10ms).
+  const { textBbox, items } = await computeTextData(currentPdfPage);
+  textItems = items;
+  viewBbox = computeViewBbox(textBbox, pageW, pageH);
 
   await renderAtScale(fitScale());
 
-  // Position so the text bbox is centered in the viewport. Constraint then
+  // Position so the view bbox is centered in the viewport. Constraint then
   // snaps any drift (no-op in practice when scale=1).
   view.scale = 1;
-  view.x = window.innerWidth  / 2 - (textBbox.x + textBbox.w / 2) * renderScale;
-  view.y = window.innerHeight / 2 - (textBbox.y + textBbox.h / 2) * renderScale;
+  view.x = window.innerWidth  / 2 - (viewBbox.x + viewBbox.w / 2) * renderScale;
+  view.y = window.innerHeight / 2 - (viewBbox.y + viewBbox.h / 2) * renderScale;
   constrainView();
   applyTransform(false);
 
@@ -269,17 +313,84 @@ export function transformForRegion(region, preferredScale) {
 }
 
 export function transformForHome() {
-  // Centered on the text bbox at fit-screen scale.
+  // Centered on the view bbox at fit-screen scale.
   const fit = fitScale();
   const visualScale = fit / renderScale;
-  const w = textBbox?.w ?? pageW;
-  const h = textBbox?.h ?? pageH;
-  const x0 = textBbox?.x ?? 0;
-  const y0 = textBbox?.y ?? 0;
+  const w = viewBbox?.w ?? pageW;
+  const h = viewBbox?.h ?? pageH;
+  const x0 = viewBbox?.x ?? 0;
+  const y0 = viewBbox?.y ?? 0;
   return {
     x: window.innerWidth  / 2 - (x0 + w / 2) * fit,
     y: window.innerHeight / 2 - (y0 + h / 2) * fit,
     scale: visualScale,
+  };
+}
+
+// ── Smart-zoom helpers (used by gestures.js) ────────────────────────────
+
+// Effective PDF-points → screen-pixels factor at the current view.
+export function effectiveScale() {
+  return renderScale * view.scale;
+}
+
+// Convert a screen point to PDF/viewport coordinates (the space textItems
+// live in).
+function screenToPdf(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  // canvas-CSS coord → PDF coord: divide by renderScale.
+  return {
+    x: (clientX - r.left) / view.scale / renderScale,
+    y: (clientY - r.top)  / view.scale / renderScale,
+  };
+}
+
+// Find the text item whose rect is closest (in screen pixels) to the screen
+// point. Returns null if no item is within `radiusPx` screen pixels.
+export function findItemAtPoint(clientX, clientY, radiusPx = 30) {
+  if (!textItems.length) return null;
+  const { x: px, y: py } = screenToPdf(clientX, clientY);
+  const eff = effectiveScale();
+  if (eff <= 0) return null;
+  const radiusPdf = radiusPx / eff;
+
+  let best = null;
+  let bestDist = Infinity;
+  for (const item of textItems) {
+    // Distance from point to item's AABB (0 if inside).
+    const dx = Math.max(item.x - px, 0, px - (item.x + item.w));
+    const dy = Math.max(item.y - py, 0, py - (item.y + item.h));
+    const d = Math.hypot(dx, dy);
+    if (d <= radiusPdf && d < bestDist) {
+      bestDist = d;
+      best = item;
+    }
+  }
+  return best;
+}
+
+// Compute a target view transform that:
+//   1. zooms so a piece of text of `fontSizePdf` PDF-units appears at
+//      `targetFontPx` CSS pixels on screen, and
+//   2. places the screen point (clientX, clientY) at the viewport center.
+// constrainView() will pull the result inside the view bbox if the centering
+// would otherwise push beyond it — so edges keep their margin visible.
+export function transformForFontSize(clientX, clientY, fontSizePdf, targetFontPx) {
+  if (!fontSizePdf || fontSizePdf <= 0) return null;
+  const targetEff = targetFontPx / fontSizePdf;       // PDF → screen pixels
+  const targetViewScale = targetEff / renderScale;     // applied via CSS transform
+
+  // Convert tap to canvas-CSS coords at the *current* view.scale, then choose
+  // view.x/y so that same canvas-CSS point ends up at the screen center after
+  // applying targetViewScale.
+  const r = canvas.getBoundingClientRect();
+  const localX = (clientX - r.left) / view.scale;
+  const localY = (clientY - r.top)  / view.scale;
+
+  return {
+    x: window.innerWidth  / 2 - localX * targetViewScale,
+    y: window.innerHeight / 2 - localY * targetViewScale,
+    scale: targetViewScale,
   };
 }
 

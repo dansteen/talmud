@@ -25,10 +25,11 @@
 //   }
 
 const DEFAULT_CELL_SIZE_PT        = 2;     // PDF points per grid cell
-const DEFAULT_CLOSE_RADIUS        = 1;     // cells; bridges ≤ 2*r*cellSize PDF pt
+const DEFAULT_CLOSE_RADIUS        = 1.5;   // cells, Euclidean (fractional ok)
 const DEFAULT_MIN_REGION_FRAC     = 0.002; // drop components < 0.2% of grid area
 const DEFAULT_MAX_ISOLATED_RUN    = 25;    // cells: max run length to count as catchword
 const DEFAULT_MIN_ISOLATION_GAP   = 10;    // cells: min whitespace on each side
+const DEFAULT_MIN_EMPTY_BELOW     = 3;     // cells: min empty rows directly below the run
 
 export function detectRegions(items, pageW, pageH, opts = {}) {
   const cellSize          = opts.cellSize          ?? DEFAULT_CELL_SIZE_PT;
@@ -36,22 +37,24 @@ export function detectRegions(items, pageW, pageH, opts = {}) {
   const minRegionFraction = opts.minRegionFraction ?? DEFAULT_MIN_REGION_FRAC;
   const maxIsolatedRun    = opts.maxIsolatedRun    ?? DEFAULT_MAX_ISOLATED_RUN;
   const minIsolationGap   = opts.minIsolationGap   ?? DEFAULT_MIN_ISOLATION_GAP;
+  const minEmptyBelow     = opts.minEmptyBelow     ?? DEFAULT_MIN_EMPTY_BELOW;
 
   const gridW = Math.max(1, Math.ceil(pageW / cellSize));
   const gridH = Math.max(1, Math.ceil(pageH / cellSize));
 
   let rawGrid = buildOccupancyGrid(items, gridW, gridH, cellSize);
 
-  // Pre-pass: if a short run of occupied cells in a row has substantial
-  // whitespace on both sides, it's almost certainly a catchword (the
-  // next-page word printed alone at the bottom of a column). Demote those
-  // cells to whitespace before they can bridge real regions during closing.
+  // Pre-pass: catchwords are short single-word runs that sit in broad
+  // horizontal whitespace — short, with whitespace on both sides AND
+  // empty rows directly below. Demote them so they can't bridge real
+  // regions during the closing pass.
   if (maxIsolatedRun > 0 && minIsolationGap > 0) {
-    rawGrid = demoteIsolatedRuns(rawGrid, gridW, gridH, maxIsolatedRun, minIsolationGap);
+    rawGrid = demoteIsolatedRuns(rawGrid, gridW, gridH, maxIsolatedRun, minIsolationGap, minEmptyBelow);
   }
 
   // Closing bridges intra-region gaps without reaching across the wider
-  // inter-region whitespace. The result is what we connected-components on.
+  // inter-region whitespace. closeRadius is a Euclidean distance in cells
+  // and accepts fractional values (1.0, 1.5, 2.0, …).
   let workGrid = rawGrid;
   if (closeRadius > 0) {
     workGrid = dilate(rawGrid, gridW, gridH, closeRadius);
@@ -88,18 +91,21 @@ function buildOccupancyGrid(items, gridW, gridH, cellSize) {
 
 // ── Pre-pass: demote isolated short runs (catchword filter) ──
 //
-// For every row, find runs of occupied cells. A run that's short
-// (≤ maxRunLen cells) AND surrounded by whitespace of at least `minGap`
-// cells on both sides is almost certainly a catchword sitting alone on
-// its line — demote it to whitespace so it can't act as a bridge between
-// real regions during the closing pass.
+// A catchword is a short single-word run that "dips down into broad
+// horizontal whitespace". We test three conditions per run:
+//   1. Run length ≤ maxRunLen cells (short — typically one Hebrew word).
+//   2. Whitespace on both sides ≥ minGap cells (no in-line neighbours
+//      within typical word-spacing distance).
+//   3. At least minEmptyBelow consecutive empty rows directly below the
+//      run's x-range (broad horizontal whitespace below — the catchword
+//      sits at the bottom of its column with empty space underneath
+//      before any other text).
 //
-// "Whitespace on both sides" matches the user's description of what
-// catchwords look like: a single short word with the rest of the row
-// empty around it. Normal in-line words have neighbouring text within
-// a couple of cells, so they don't trigger this filter.
+// Conditions 2 and 3 distinguish the catchword from a normal short
+// last-line of a paragraph (which has text immediately above, below, or
+// in nearby columns at the same y).
 
-function demoteIsolatedRuns(grid, gridW, gridH, maxRunLen, minGap) {
+function demoteIsolatedRuns(grid, gridW, gridH, maxRunLen, minGap, minEmptyBelow) {
   const out = new Uint8Array(grid);
   for (let y = 0; y < gridH; y++) {
     const rowBase = y * gridW;
@@ -115,78 +121,128 @@ function demoteIsolatedRuns(grid, gridW, gridH, maxRunLen, minGap) {
         i++;
       }
     }
-    // Demote any short run with substantial gap on both sides.
     for (let j = 0; j < runs.length; j++) {
       const r = runs[j];
       if (r.end - r.start > maxRunLen) continue;
-      const leftGap  = j > 0                  ? r.start - runs[j - 1].end : r.start;
-      const rightGap = j < runs.length - 1    ? runs[j + 1].start - r.end : gridW - r.end;
-      if (leftGap >= minGap && rightGap >= minGap) {
-        for (let x = r.start; x < r.end; x++) out[rowBase + x] = 0;
+      const leftGap  = j > 0               ? r.start - runs[j - 1].end : r.start;
+      const rightGap = j < runs.length - 1 ? runs[j + 1].start - r.end : gridW - r.end;
+      if (leftGap < minGap || rightGap < minGap) continue;
+
+      // Count consecutive empty rows directly below the run's x-range.
+      if (minEmptyBelow > 0) {
+        let emptyBelow = 0;
+        for (let yy = y + 1; yy < gridH; yy++) {
+          let rowEmpty = true;
+          const yBase = yy * gridW;
+          for (let xx = r.start; xx < r.end; xx++) {
+            if (grid[yBase + xx]) { rowEmpty = false; break; }
+          }
+          if (!rowEmpty) break;
+          emptyBelow++;
+          if (emptyBelow >= minEmptyBelow) break; // got enough
+        }
+        if (emptyBelow < minEmptyBelow) continue;
       }
+
+      for (let x = r.start; x < r.end; x++) out[rowBase + x] = 0;
     }
   }
   return out;
 }
 
-// ── Morphological dilation / erosion (separable, square kernel) ──
+// ── Morphological dilation / erosion via squared Euclidean distance ──
+//
+// Built on Felzenszwalb-Huttenlocher's exact O(N) squared-distance
+// transform. Dilation = "cells whose distance to the nearest occupied
+// cell is ≤ radius"; erosion = the dual operation on the inverted mask.
+// Because the test is `d² ≤ r²`, the radius can be any non-negative
+// real number — fractional values produce a real change in coverage,
+// not just an integer rounding.
 
 function dilate(grid, gridW, gridH, radius) {
-  const tmp = new Uint8Array(gridW * gridH);
-  for (let y = 0; y < gridH; y++) {
-    const row = y * gridW;
-    for (let x = 0; x < gridW; x++) {
-      const x0 = x - radius < 0 ? 0 : x - radius;
-      const x1 = x + radius >= gridW ? gridW - 1 : x + radius;
-      let v = 0;
-      for (let xx = x0; xx <= x1; xx++) {
-        if (grid[row + xx]) { v = 1; break; }
-      }
-      tmp[row + x] = v;
-    }
-  }
+  if (radius <= 0) return new Uint8Array(grid);
+  const d2 = sedt(grid, gridW, gridH);
+  const r2 = radius * radius;
   const out = new Uint8Array(gridW * gridH);
-  for (let x = 0; x < gridW; x++) {
-    for (let y = 0; y < gridH; y++) {
-      const y0 = y - radius < 0 ? 0 : y - radius;
-      const y1 = y + radius >= gridH ? gridH - 1 : y + radius;
-      let v = 0;
-      for (let yy = y0; yy <= y1; yy++) {
-        if (tmp[yy * gridW + x]) { v = 1; break; }
-      }
-      out[y * gridW + x] = v;
-    }
+  for (let i = 0; i < d2.length; i++) {
+    if (d2[i] <= r2) out[i] = 1;
   }
   return out;
 }
 
 function erode(grid, gridW, gridH, radius) {
-  const tmp = new Uint8Array(gridW * gridH);
-  for (let y = 0; y < gridH; y++) {
-    const row = y * gridW;
-    for (let x = 0; x < gridW; x++) {
-      const x0 = x - radius < 0 ? 0 : x - radius;
-      const x1 = x + radius >= gridW ? gridW - 1 : x + radius;
-      let v = 1;
-      for (let xx = x0; xx <= x1; xx++) {
-        if (!grid[row + xx]) { v = 0; break; }
-      }
-      tmp[row + x] = v;
-    }
-  }
+  if (radius <= 0) return new Uint8Array(grid);
+  const inv = new Uint8Array(gridW * gridH);
+  for (let i = 0; i < grid.length; i++) inv[i] = grid[i] ? 0 : 1;
+  const d2 = sedt(inv, gridW, gridH);
+  const r2 = radius * radius;
   const out = new Uint8Array(gridW * gridH);
-  for (let x = 0; x < gridW; x++) {
-    for (let y = 0; y < gridH; y++) {
-      const y0 = y - radius < 0 ? 0 : y - radius;
-      const y1 = y + radius >= gridH ? gridH - 1 : y + radius;
-      let v = 1;
-      for (let yy = y0; yy <= y1; yy++) {
-        if (!tmp[yy * gridW + x]) { v = 0; break; }
-      }
-      out[y * gridW + x] = v;
-    }
+  for (let i = 0; i < d2.length; i++) {
+    if (d2[i] > r2) out[i] = 1;
   }
   return out;
+}
+
+// Squared Euclidean distance transform (Felzenszwalb-Huttenlocher 2004).
+// For each cell, returns the squared distance to the nearest occupied
+// cell. Two passes of the 1-D parabolic-envelope DT — once over rows,
+// once over columns — together give the exact 2-D answer in O(N).
+function sedt(mask, gridW, gridH) {
+  const INF = 1e20;
+  const out = new Float64Array(gridW * gridH);
+  for (let i = 0; i < out.length; i++) out[i] = mask[i] ? 0 : INF;
+
+  // Row pass: 1-D SEDT along each row, written back into `out`.
+  const rowF = new Float64Array(gridW);
+  const rowD = new Float64Array(gridW);
+  for (let y = 0; y < gridH; y++) {
+    const base = y * gridW;
+    for (let x = 0; x < gridW; x++) rowF[x] = out[base + x];
+    sedt1d(rowF, rowD, gridW);
+    for (let x = 0; x < gridW; x++) out[base + x] = rowD[x];
+  }
+
+  // Column pass: 1-D SEDT along each column.
+  const colF = new Float64Array(gridH);
+  const colD = new Float64Array(gridH);
+  for (let x = 0; x < gridW; x++) {
+    for (let y = 0; y < gridH; y++) colF[y] = out[y * gridW + x];
+    sedt1d(colF, colD, gridH);
+    for (let y = 0; y < gridH; y++) out[y * gridW + x] = colD[y];
+  }
+
+  return out;
+}
+
+// 1-D distance transform of an arbitrary sampled function f, computing
+// d[q] = min over p of (q - p)² + f[p]. O(n) using the lower-envelope
+// of parabolas. (See Felzenszwalb-Huttenlocher 2004 §2.)
+function sedt1d(f, d, n) {
+  const v = new Int32Array(n);
+  const z = new Float64Array(n + 1);
+  let k = 0;
+  v[0] = 0;
+  z[0] = -Infinity;
+  z[1] = Infinity;
+  for (let q = 1; q < n; q++) {
+    let s;
+    while (true) {
+      const vk = v[k];
+      s = ((f[q] + q * q) - (f[vk] + vk * vk)) / (2 * (q - vk));
+      if (s > z[k]) break;
+      k--;
+    }
+    k++;
+    v[k] = q;
+    z[k] = s;
+    z[k + 1] = Infinity;
+  }
+  k = 0;
+  for (let q = 0; q < n; q++) {
+    while (z[k + 1] < q) k++;
+    const dq = q - v[k];
+    d[q] = dq * dq + f[v[k]];
+  }
 }
 
 // ── Connected components (4-neighbor flood fill) ──

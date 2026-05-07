@@ -1,11 +1,19 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { detectRegions } from './regions.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 const canvas = document.getElementById('page-canvas');
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 const overlay = document.getElementById('region-overlay');
+
+// Region overlay is shown when ?debug=1 is in the URL or after pressing 'd'.
+const DEBUG_REGIONS = new URLSearchParams(location.search).has('debug');
+if (DEBUG_REGIONS) overlay.classList.add('visible');
+window.addEventListener('keydown', e => {
+  if (e.key === 'd' || e.key === 'D') overlay.classList.toggle('visible');
+});
 
 // Page geometry (set once per loaded page)
 let pageW = 1;       // natural PDF width (PDF points)
@@ -21,6 +29,10 @@ let textBbox = null;
 // Used by findItemAtPoint() for smart double-tap zoom.
 let textItems = [];
 
+// Region detection result: { regions, labels, gridW, gridH, cellSize } or null
+// before any page has loaded. The labeled grid drives O(1) hit-testing.
+let regionsData = null;
+
 // Visual transform applied to the canvas via CSS
 export const view = {
   scale: 1,  // visual scale on top of the canvas's natural CSS size
@@ -30,9 +42,8 @@ export const view = {
   cssH: 0,
 };
 
-// Region detection is currently disabled (the algorithm needs reworking).
-// Exporting `regions` as null keeps gestures.js's "no regions" fallback path
-// active so double-tap zoom still does a generic 2.5x zoom.
+// `regions` exposes the latest detection result for gestures.js / debug.
+// Null until the first page loads.
 export let regions = null;
 
 let currentPdfPage = null;
@@ -259,7 +270,7 @@ export function scheduleQualityRender() {
 
 export async function loadPage(url, savedViewState = null) {
   regions = null;
-  // No region detection right now — keep the pending-dot indicator hidden.
+  regionsData = null;
   document.getElementById('region-pending').classList.add('hidden');
 
   const pdfDoc = await pdfjsLib.getDocument({
@@ -287,6 +298,13 @@ export async function loadPage(url, savedViewState = null) {
   textItems = data.items;
   textBbox = data.textBbox;
 
+  // Detect regions from the per-item rects: low-res occupancy grid,
+  // morphological closing, connected components. Gives us per-region bbox
+  // + median fontSize + a labeled grid for hit-testing.
+  regionsData = detectRegions(textItems, pageW, pageH);
+  regions = regionsData.regions;
+  drawRegionOverlay();
+
   // If we have a saved zoom/center for this page, render at that scale and
   // place the saved center at the screen center. Otherwise default to home
   // (text bbox fit).
@@ -303,6 +321,82 @@ export async function loadPage(url, savedViewState = null) {
   }
   constrainView();
   applyTransform(false);
+}
+
+// ── Debug overlay (?debug=1 or 'd' key) ────────────────────────────────
+
+// Distinct-but-readable hues for region IDs. Cycled if there are more
+// regions than colors.
+const REGION_COLORS = [
+  [80, 255, 130],   // gemara-green
+  [255, 200, 50],   // commentary-amber
+  [150, 170, 255],  // reference-blue
+  [255, 130, 200],  // pink
+  [130, 255, 230],  // teal
+  [255, 160, 90],   // orange
+  [200, 130, 255],  // violet
+];
+
+// Render the labeled grid as a translucent pixel mask + per-region bbox
+// outlines. The pixel mask shows the actual non-rectangular region shape
+// (L's, T's, etc.); bbox outlines are useful for "this is what would be
+// the zoom target".
+function drawRegionOverlay() {
+  if (!overlay) return;
+  overlay.innerHTML = '';
+  if (!regionsData) return;
+
+  const { labels, gridW, gridH, cellSize, regions: regs } = regionsData;
+
+  // Pixel mask via an offscreen canvas at grid resolution, scaled up via CSS.
+  // image-rendering: pixelated keeps the cell boundaries crisp.
+  const mask = document.createElement('canvas');
+  mask.width = gridW;
+  mask.height = gridH;
+  mask.style.cssText =
+    'position:absolute;inset:0;width:100%;height:100%;' +
+    'image-rendering:pixelated;image-rendering:crisp-edges;' +
+    'pointer-events:none;';
+  const mctx = mask.getContext('2d');
+  const img = mctx.createImageData(gridW, gridH);
+  for (let i = 0; i < gridW * gridH; i++) {
+    const lbl = labels[i];
+    if (lbl === 0) continue;
+    const [r, g, b] = REGION_COLORS[(lbl - 1) % REGION_COLORS.length];
+    const o = i * 4;
+    img.data[o + 0] = r;
+    img.data[o + 1] = g;
+    img.data[o + 2] = b;
+    img.data[o + 3] = 70; // semi-transparent so the underlying text reads
+  }
+  mctx.putImageData(img, 0, 0);
+  overlay.appendChild(mask);
+
+  // Bbox outline + label per region.
+  for (const reg of regs) {
+    const [r, g, b] = REGION_COLORS[(reg.id - 1) % REGION_COLORS.length];
+    const box = document.createElement('div');
+    box.style.cssText =
+      `position:absolute;` +
+      `left:${(reg.bbox.x / pageW * 100)}%;` +
+      `top:${(reg.bbox.y / pageH * 100)}%;` +
+      `width:${(reg.bbox.w / pageW * 100)}%;` +
+      `height:${(reg.bbox.h / pageH * 100)}%;` +
+      `border:2px solid rgba(${r},${g},${b},0.9);` +
+      `box-sizing:border-box;pointer-events:none;`;
+    overlay.appendChild(box);
+
+    const label = document.createElement('span');
+    label.style.cssText =
+      `position:absolute;` +
+      `left:${(reg.bbox.x / pageW * 100)}%;` +
+      `top:${(reg.bbox.y / pageH * 100)}%;` +
+      `font:10px/1.2 ui-monospace,monospace;color:white;` +
+      `background:rgba(0,0,0,0.75);padding:1px 4px;white-space:nowrap;` +
+      `pointer-events:none;`;
+    label.textContent = `#${reg.id} fs${reg.fontSize.toFixed(1)} n${reg.itemCount}`;
+    overlay.appendChild(label);
+  }
 }
 
 // Snapshot of the current view in PDF-coordinate units that survives the
@@ -384,6 +478,20 @@ function screenToPdf(clientX, clientY) {
     x: (clientX - r.left) / view.scale / renderScale,
     y: (clientY - r.top)  / view.scale / renderScale,
   };
+}
+
+// Look up the region under a screen point via the labeled grid.
+// Returns the region object (with bbox + fontSize + …) or null for whitespace.
+export function findRegionAtPoint(clientX, clientY) {
+  if (!regionsData) return null;
+  const { x: px, y: py } = screenToPdf(clientX, clientY);
+  const { labels, gridW, gridH, cellSize, regions: regs } = regionsData;
+  const cx = Math.floor(px / cellSize);
+  const cy = Math.floor(py / cellSize);
+  if (cx < 0 || cy < 0 || cx >= gridW || cy >= gridH) return null;
+  const lbl = labels[cy * gridW + cx];
+  if (lbl === 0) return null;
+  return regs.find(r => r.id === lbl) ?? null;
 }
 
 // Find the text item whose rect is closest (in screen pixels) to the screen

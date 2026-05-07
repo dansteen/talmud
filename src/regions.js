@@ -1,188 +1,60 @@
-// Region detection by recursive whitespace-channel decomposition (X-Y cut).
+// Region detection by connected components on a closed text-occupancy mask.
 //
-// Approach: rasterize text-item bboxes onto an occupancy grid. Then split
-// the page recursively — at each level, find candidate channels on both
-// axes (rows that are ≥ 90 % whitespace, and columns that are ≥ 90 %
-// whitespace within the current sub-region) and apply the axis with the
-// most cuts. Continue recursing on each resulting sub-rectangle until no
-// channels are found on either axis.
+// No assumptions about column structure, page-spanning channels, or any
+// particular layout. Each region is whatever shape the whitespace defines
+// locally.
 //
-// Two thresholds:
-//   - `channelDensity`: a row/column counts as whitespace if its occupied
-//     fraction is at most this value (default 0.10 → ≥ 90 % whitespace).
-//   - `channelMinThickness`: how many consecutive whitespace rows/cols are
-//     needed to count as a real channel (default 3 cells). Filters out
-//     individual inter-line gaps that happen to be sparse.
-//
-// Densities are recomputed *within the sub-region* at each recursion level
-// — a horizontal channel that spans Rashi's column but not Gemara's gets
-// detected once we've already cut down to Rashi (because the density
-// numerator no longer includes Gemara's text).
+// Pipeline:
+//   1. Rasterize text-item bboxes onto a low-resolution occupancy grid
+//      (≈ 2 PDF points per cell).
+//   2. Morphologically close (dilate then erode by `closeRadius`) to bridge
+//      gaps narrower than the closing width. Picks up inter-line gaps and
+//      word gaps within a region; doesn't reach across the wider whitespace
+//      between regions.
+//   3. 4-neighbor connected-components label the closed mask. Each
+//      component is a region — any shape, any topology.
+//   4. Drop tiny components (page numbers, isolated marks).
+//   5. For each surviving region: bbox, item count, median fontSize.
 //
 // Output:
 //   {
 //     regions: [{ id, bbox, fontSize, itemCount, pixelCount }, …],
-//     labels:  Uint32Array(gridW * gridH)  // 0 = whitespace, 1..N = region id
-//     grid:    Uint8Array(gridW * gridH)   // raw occupancy (for visualization)
+//     labels:  Uint32Array(gridW * gridH)  // 0 = background, 1..N = region id
+//     grid:    Uint8Array(gridW * gridH)   // raw text occupancy (visualization)
 //     gridW, gridH, cellSize
 //   }
 
-const DEFAULT_CELL_SIZE_PT          = 4;
-const DEFAULT_CHANNEL_DENSITY       = 0.10;  // ≤ 10% occupied = whitespace
-const DEFAULT_CHANNEL_MIN_THICKNESS = 3;     // cells
-const DEFAULT_MIN_REGION_FRAC       = 0.002; // drop rectangles < 0.2% of grid
-const DEFAULT_MAX_DEPTH             = 8;     // X-Y cut recursion depth cap
+const DEFAULT_CELL_SIZE_PT       = 2;     // PDF points per grid cell
+const DEFAULT_CLOSE_RADIUS       = 1;     // cells; bridges ≤ 2*r*cellSize PDF pt
+const DEFAULT_MIN_REGION_FRAC    = 0.002; // drop components < 0.2% of grid area
 
 export function detectRegions(items, pageW, pageH, opts = {}) {
-  const cellSize             = opts.cellSize             ?? DEFAULT_CELL_SIZE_PT;
-  const channelDensity       = opts.channelDensity       ?? DEFAULT_CHANNEL_DENSITY;
-  const channelMinThickness  = opts.channelMinThickness  ?? DEFAULT_CHANNEL_MIN_THICKNESS;
-  const minRegionFraction    = opts.minRegionFraction    ?? DEFAULT_MIN_REGION_FRAC;
-  const maxDepth             = opts.maxDepth             ?? DEFAULT_MAX_DEPTH;
+  const cellSize          = opts.cellSize          ?? DEFAULT_CELL_SIZE_PT;
+  const closeRadius       = opts.closeRadius       ?? DEFAULT_CLOSE_RADIUS;
+  const minRegionFraction = opts.minRegionFraction ?? DEFAULT_MIN_REGION_FRAC;
 
   const gridW = Math.max(1, Math.ceil(pageW / cellSize));
   const gridH = Math.max(1, Math.ceil(pageH / cellSize));
-  const grid  = buildOccupancyGrid(items, gridW, gridH, cellSize);
 
-  const root = { x: 0, y: 0, w: gridW, h: gridH };
-  const rectangles = xyCut(grid, gridW, root, maxDepth, channelDensity, channelMinThickness);
+  const rawGrid = buildOccupancyGrid(items, gridW, gridH, cellSize);
 
-  // Per rectangle: occupied cells + item stats; filter tiny.
+  // Closing bridges intra-region gaps without reaching across the wider
+  // inter-region whitespace. The result is what we connected-components on.
+  let workGrid = rawGrid;
+  if (closeRadius > 0) {
+    workGrid = dilate(rawGrid, gridW, gridH, closeRadius);
+    workGrid = erode (workGrid, gridW, gridH, closeRadius);
+  }
+
+  const { labels, count } = connectedComponents(workGrid, gridW, gridH);
+  let regions = computeRegionStats(labels, gridW, gridH, cellSize, items, count);
+
   const minCells = Math.max(8, Math.round(minRegionFraction * gridW * gridH));
-  const regions = [];
-  let nextId = 1;
-  for (const r of rectangles) {
-    const occupied = countOccupied(grid, gridW, r);
-    if (occupied < minCells) continue;
-    const { itemCount, fontSize } = itemStats(items, cellSize, r);
-    regions.push({
-      id: nextId++,
-      bbox: {
-        x: r.x * cellSize, y: r.y * cellSize,
-        w: r.w * cellSize, h: r.h * cellSize,
-      },
-      pixelCount: occupied,
-      itemCount,
-      fontSize,
-    });
-  }
+  regions = filterAndRelabel(regions, labels, minCells);
 
-  // Build labeled grid: every cell inside a region's rectangle gets that
-  // region's id. Cells outside any region (channels, sub-threshold rects)
-  // stay 0 (background).
-  const labels = new Uint32Array(gridW * gridH);
-  for (const reg of regions) {
-    const rx = Math.round(reg.bbox.x / cellSize);
-    const ry = Math.round(reg.bbox.y / cellSize);
-    const rw = Math.round(reg.bbox.w / cellSize);
-    const rh = Math.round(reg.bbox.h / cellSize);
-    for (let y = ry; y < ry + rh; y++) {
-      const row = y * gridW;
-      for (let x = rx; x < rx + rw; x++) labels[row + x] = reg.id;
-    }
-  }
-
-  return { regions, labels, grid, gridW, gridH, cellSize };
-}
-
-// ── Recursive X-Y cut ──
-
-function xyCut(grid, gridW, region, depth, density, minThickness) {
-  if (depth <= 0 || region.w < 2 * minThickness || region.h < 2 * minThickness) {
-    return [region];
-  }
-
-  const hChannels = findChannels(grid, gridW, region, 'horizontal', density, minThickness);
-  const vChannels = findChannels(grid, gridW, region, 'vertical',   density, minThickness);
-
-  if (hChannels.length === 0 && vChannels.length === 0) {
-    return [region];
-  }
-
-  // Vilna pages are fundamentally columnar — the inter-column gaps
-  // (Rashi / Gemara / Tosfos) are the strongest division on the page.
-  // Always prefer vertical splits when any are present; horizontal
-  // splits (header bands, paragraph breaks within a column) are
-  // secondary and get applied at the next recursion level.
-  let axis, channels;
-  if (vChannels.length > 0) {
-    axis = 'vertical';   channels = vChannels;
-  } else if (hChannels.length > 0) {
-    axis = 'horizontal'; channels = hChannels;
-  } else {
-    return [region];
-  }
-
-  const subs = stripsFromChannels(region, axis, channels);
-  const out = [];
-  for (const sub of subs) {
-    out.push(...xyCut(grid, gridW, sub, depth - 1, density, minThickness));
-  }
-  return out;
-}
-
-// Find runs of whitespace cells along an axis within a sub-region.
-// `densities` are computed using only the cells inside `region`, so a
-// channel that spans only part of the page (e.g., a horizontal break inside
-// Rashi's column) is detectable once we've recursed down to that column.
-function findChannels(grid, gridW, region, axis, threshold, minThickness) {
-  const len = axis === 'horizontal' ? region.h : region.w;
-  const densities = new Float32Array(len);
-
-  if (axis === 'horizontal') {
-    // Density per row, counting only cells in [region.x, region.x + region.w).
-    if (region.w <= 0) return [];
-    for (let dy = 0; dy < len; dy++) {
-      const rowStart = (region.y + dy) * gridW + region.x;
-      let count = 0;
-      for (let dx = 0; dx < region.w; dx++) {
-        if (grid[rowStart + dx]) count++;
-      }
-      densities[dy] = count / region.w;
-    }
-  } else {
-    // Density per column, counting only cells in [region.y, region.y + region.h).
-    if (region.h <= 0) return [];
-    for (let dx = 0; dx < len; dx++) {
-      const x = region.x + dx;
-      let count = 0;
-      for (let dy = 0; dy < region.h; dy++) {
-        if (grid[(region.y + dy) * gridW + x]) count++;
-      }
-      densities[dx] = count / region.h;
-    }
-  }
-
-  const channels = [];
-  let i = 0;
-  while (i < len) {
-    if (densities[i] <= threshold) {
-      const start = i;
-      while (i < len && densities[i] <= threshold) i++;
-      const end = i;
-      if (end - start >= minThickness) channels.push({ start, end });
-    } else {
-      i++;
-    }
-  }
-  return channels;
-}
-
-// Convert {start, end} channel intervals into the strips between them,
-// expressed as absolute grid-coordinate sub-rectangles of `region`.
-function stripsFromChannels(region, axis, channels) {
-  const len = axis === 'horizontal' ? region.h : region.w;
-  const ranges = [];
-  let prevEnd = 0;
-  for (const ch of channels) {
-    if (ch.start > prevEnd) ranges.push({ start: prevEnd, end: ch.start });
-    prevEnd = ch.end;
-  }
-  if (prevEnd < len) ranges.push({ start: prevEnd, end: len });
-
-  return ranges.map(s => axis === 'horizontal'
-    ? { x: region.x, y: region.y + s.start, w: region.w, h: s.end - s.start }
-    : { x: region.x + s.start, y: region.y, w: s.end - s.start, h: region.h });
+  // Visualization paints `rawGrid` cells (so the colored fill follows the
+  // actual text shape, not the dilated mask).
+  return { regions, labels, grid: rawGrid, gridW, gridH, cellSize };
 }
 
 // ── Occupancy grid ──
@@ -202,29 +74,162 @@ function buildOccupancyGrid(items, gridW, gridH, cellSize) {
   return grid;
 }
 
-// ── Per-rectangle stats ──
+// ── Morphological dilation / erosion (separable, square kernel) ──
 
-function countOccupied(grid, gridW, r) {
-  let count = 0;
-  for (let y = r.y; y < r.y + r.h; y++) {
+function dilate(grid, gridW, gridH, radius) {
+  const tmp = new Uint8Array(gridW * gridH);
+  for (let y = 0; y < gridH; y++) {
     const row = y * gridW;
-    for (let x = r.x; x < r.x + r.w; x++) if (grid[row + x]) count++;
+    for (let x = 0; x < gridW; x++) {
+      const x0 = x - radius < 0 ? 0 : x - radius;
+      const x1 = x + radius >= gridW ? gridW - 1 : x + radius;
+      let v = 0;
+      for (let xx = x0; xx <= x1; xx++) {
+        if (grid[row + xx]) { v = 1; break; }
+      }
+      tmp[row + x] = v;
+    }
   }
-  return count;
+  const out = new Uint8Array(gridW * gridH);
+  for (let x = 0; x < gridW; x++) {
+    for (let y = 0; y < gridH; y++) {
+      const y0 = y - radius < 0 ? 0 : y - radius;
+      const y1 = y + radius >= gridH ? gridH - 1 : y + radius;
+      let v = 0;
+      for (let yy = y0; yy <= y1; yy++) {
+        if (tmp[yy * gridW + x]) { v = 1; break; }
+      }
+      out[y * gridW + x] = v;
+    }
+  }
+  return out;
 }
 
-function itemStats(items, cellSize, r) {
-  const fontSizes = [];
-  let itemCount = 0;
+function erode(grid, gridW, gridH, radius) {
+  const tmp = new Uint8Array(gridW * gridH);
+  for (let y = 0; y < gridH; y++) {
+    const row = y * gridW;
+    for (let x = 0; x < gridW; x++) {
+      const x0 = x - radius < 0 ? 0 : x - radius;
+      const x1 = x + radius >= gridW ? gridW - 1 : x + radius;
+      let v = 1;
+      for (let xx = x0; xx <= x1; xx++) {
+        if (!grid[row + xx]) { v = 0; break; }
+      }
+      tmp[row + x] = v;
+    }
+  }
+  const out = new Uint8Array(gridW * gridH);
+  for (let x = 0; x < gridW; x++) {
+    for (let y = 0; y < gridH; y++) {
+      const y0 = y - radius < 0 ? 0 : y - radius;
+      const y1 = y + radius >= gridH ? gridH - 1 : y + radius;
+      let v = 1;
+      for (let yy = y0; yy <= y1; yy++) {
+        if (!tmp[yy * gridW + x]) { v = 0; break; }
+      }
+      out[y * gridW + x] = v;
+    }
+  }
+  return out;
+}
+
+// ── Connected components (4-neighbor flood fill) ──
+
+function connectedComponents(mask, gridW, gridH) {
+  const labels = new Uint32Array(gridW * gridH);
+  let next = 1;
+  const stack = [];
+
+  for (let y = 0; y < gridH; y++) {
+    for (let x = 0; x < gridW; x++) {
+      const seed = y * gridW + x;
+      if (mask[seed] !== 1 || labels[seed] !== 0) continue;
+      stack.length = 0;
+      stack.push(seed);
+      while (stack.length) {
+        const i = stack.pop();
+        if (labels[i] !== 0 || mask[i] !== 1) continue;
+        labels[i] = next;
+        const cx = i % gridW;
+        const cy = (i - cx) / gridW;
+        if (cx > 0)         stack.push(i - 1);
+        if (cx < gridW - 1) stack.push(i + 1);
+        if (cy > 0)         stack.push(i - gridW);
+        if (cy < gridH - 1) stack.push(i + gridW);
+      }
+      next++;
+    }
+  }
+  return { labels, count: next - 1 };
+}
+
+// ── Per-region statistics ──
+
+function computeRegionStats(labels, gridW, gridH, cellSize, items, count) {
+  const stats = new Array(count + 1);
+  for (let i = 1; i <= count; i++) {
+    stats[i] = {
+      id: i,
+      pixelCount: 0,
+      xMin: Infinity, yMin: Infinity, xMax: -Infinity, yMax: -Infinity,
+      fontSizes: [],
+      itemCount: 0,
+    };
+  }
+  for (let y = 0; y < gridH; y++) {
+    const row = y * gridW;
+    for (let x = 0; x < gridW; x++) {
+      const lbl = labels[row + x];
+      if (lbl === 0) continue;
+      const s = stats[lbl];
+      s.pixelCount++;
+      const px = x * cellSize, py = y * cellSize;
+      if (px < s.xMin) s.xMin = px;
+      if (py < s.yMin) s.yMin = py;
+      if (px + cellSize > s.xMax) s.xMax = px + cellSize;
+      if (py + cellSize > s.yMax) s.yMax = py + cellSize;
+    }
+  }
   for (const it of items) {
     const cx = Math.floor((it.x + it.w / 2) / cellSize);
     const cy = Math.floor((it.y + it.h / 2) / cellSize);
-    if (cx >= r.x && cx < r.x + r.w && cy >= r.y && cy < r.y + r.h) {
-      fontSizes.push(it.fontSize);
-      itemCount++;
-    }
+    if (cx < 0 || cy < 0 || cx >= gridW || cy >= gridH) continue;
+    const lbl = labels[cy * gridW + cx];
+    if (lbl === 0) continue;
+    const s = stats[lbl];
+    s.fontSizes.push(it.fontSize);
+    s.itemCount++;
   }
-  fontSizes.sort((a, b) => a - b);
-  const fontSize = fontSizes.length > 0 ? fontSizes[fontSizes.length >> 1] : 0;
-  return { itemCount, fontSize };
+  const out = [];
+  for (let i = 1; i <= count; i++) {
+    const s = stats[i];
+    if (!s || s.pixelCount === 0) continue;
+    const fs = s.fontSizes.slice().sort((a, b) => a - b);
+    const median = fs.length > 0 ? fs[fs.length >> 1] : 0;
+    out.push({
+      id: s.id,
+      bbox: { x: s.xMin, y: s.yMin, w: s.xMax - s.xMin, h: s.yMax - s.yMin },
+      pixelCount: s.pixelCount,
+      itemCount: s.itemCount,
+      fontSize: median,
+    });
+  }
+  return out;
+}
+
+// Drop regions below the size threshold and renumber survivors so IDs are
+// dense (1..N), updating the labels grid in place.
+function filterAndRelabel(regions, labels, minCells) {
+  const surviving = regions.filter(r => r.pixelCount >= minCells);
+  const remap = new Map();
+  surviving.forEach((r, i) => {
+    remap.set(r.id, i + 1);
+    r.id = i + 1;
+  });
+  for (let i = 0; i < labels.length; i++) {
+    const old = labels[i];
+    if (old !== 0) labels[i] = remap.get(old) ?? 0;
+  }
+  return surviving;
 }

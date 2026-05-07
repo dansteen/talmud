@@ -25,6 +25,7 @@ const DEFAULT_CELL_SIZE_PT = 4;        // PDF points per grid cell
 const DEFAULT_CLOSE_RADIUS = 1;        // cells; bridges ≤ 2*r*cellSize PDF pt
 const DEFAULT_MIN_REGION_FRAC = 0.002; // drop components < 0.2% of grid area
 const DEFAULT_NOISE_MIN_CELLS = 5;     // drop raw-grid components < this many cells
+const DEFAULT_SINGLE_LINE_MAX_X = 60;  // PDF pt; 0 disables the filter
 
 // Bridging math: a closing of radius `r` cells fills any whitespace channel
 // up to `2*r` cells wide. With cellSize=4 and r=1 that's 8 PDF pt — wide
@@ -33,21 +34,32 @@ const DEFAULT_NOISE_MIN_CELLS = 5;     // drop raw-grid components < this many c
 // pt on a Vilna daf) intact. Tunable via ?closeRadius=&cellSize= in the URL.
 //
 // `noiseMinCells` runs an extra connected-components pass on the *raw* grid
-// (before closing) and drops any component smaller than this. Catches
-// catchwords (the single word at the bottom of each section pointing to the
-// next page), page numbers, and stray glyphs — so they can't bridge into
-// adjacent regions during the closing step.
+// (before closing) and drops any component smaller than this. Catches stray
+// glyphs and other small isolated marks before they can bridge real regions.
+//
+// `singleLineMaxX` (PDF pt) drops items that are alone on their y-line: no
+// other item shares their y-band within this many points horizontally.
+// Catches the catchword (the next-page word printed alone at the bottom of
+// each Gemara/Rashi/Tosfos column), which would otherwise sit isolated
+// between two real regions and bridge them.
 
 export function detectRegions(items, pageW, pageH, opts = {}) {
-  const cellSize      = opts.cellSize          ?? DEFAULT_CELL_SIZE_PT;
-  const closeRadius   = opts.closeRadius       ?? DEFAULT_CLOSE_RADIUS;
-  const minFrac       = opts.minRegionFraction ?? DEFAULT_MIN_REGION_FRAC;
-  const noiseMinCells = opts.noiseMinCells     ?? DEFAULT_NOISE_MIN_CELLS;
+  const cellSize        = opts.cellSize          ?? DEFAULT_CELL_SIZE_PT;
+  const closeRadius     = opts.closeRadius       ?? DEFAULT_CLOSE_RADIUS;
+  const minFrac         = opts.minRegionFraction ?? DEFAULT_MIN_REGION_FRAC;
+  const noiseMinCells   = opts.noiseMinCells     ?? DEFAULT_NOISE_MIN_CELLS;
+  const singleLineMaxX  = opts.singleLineMaxX    ?? DEFAULT_SINGLE_LINE_MAX_X;
 
   const gridW = Math.max(1, Math.ceil(pageW / cellSize));
   const gridH = Math.max(1, Math.ceil(pageH / cellSize));
 
-  let grid = buildOccupancyGrid(items, gridW, gridH, cellSize);
+  // Drop catchwords and other "alone on their y-line" items before they can
+  // contribute to the occupancy grid and bridge real regions during closing.
+  const filteredItems = singleLineMaxX > 0
+    ? filterSingleItemLines(items, singleLineMaxX)
+    : items;
+
+  let grid = buildOccupancyGrid(filteredItems, gridW, gridH, cellSize);
   // Pre-closing noise filter: drop tiny isolated components (catchwords,
   // page numbers, stray glyphs) on the raw grid before they can bridge to
   // anything during the closing step.
@@ -60,12 +72,70 @@ export function detectRegions(items, pageW, pageH, opts = {}) {
   grid = erode (grid, gridW, gridH, closeRadius);
 
   const { labels, count } = connectedComponents(grid, gridW, gridH);
-  let regions = computeRegionStats(labels, gridW, gridH, cellSize, items, count);
+  let regions = computeRegionStats(labels, gridW, gridH, cellSize, filteredItems, count);
 
   const minCells = Math.max(8, Math.round(minFrac * gridW * gridH));
   regions = filterAndRelabel(regions, labels, minCells);
 
   return { regions, labels, gridW, gridH, cellSize };
+}
+
+// Drop items that are alone on their y-line within a horizontal radius.
+// "Alone on their line" means: no other item has overlapping y-center
+// (within half the smaller item's height) AND a horizontal-center distance
+// of at most `maxX` PDF points. The threshold is calibrated so neighbors in
+// the same column count, but neighbors in *other* columns (separated by a
+// wide channel) don't — so a single-word catchword at the bottom of one
+// column gets dropped even if the longer adjacent column happens to have
+// text at the same y.
+function filterSingleItemLines(items, maxX) {
+  const n = items.length;
+  if (n < 2) return items.slice();
+  // Sort by y-center so we can prune the inner loop with a simple range
+  // check. O(n²) worst case, near O(n*k) in practice for small k.
+  const yc = new Float32Array(n);
+  const xc = new Float32Array(n);
+  const halfH = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const it = items[i];
+    yc[i] = it.y + it.h / 2;
+    xc[i] = it.x + it.w / 2;
+    halfH[i] = it.h / 2;
+  }
+  const order = new Int32Array(n);
+  for (let i = 0; i < n; i++) order[i] = i;
+  order.sort((a, b) => yc[a] - yc[b]);
+  // Map original index → position in sorted order, so we can scan neighbors
+  // in y-order without re-sorting.
+  const pos = new Int32Array(n);
+  for (let p = 0; p < n; p++) pos[order[p]] = p;
+
+  const keep = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const ay = yc[i], ax = xc[i], ah = halfH[i];
+    const p = pos[i];
+    // Walk outward in y-sorted order until we leave the y-window.
+    for (let dir = -1; dir <= 1; dir += 2) {
+      let q = p + dir;
+      while (q >= 0 && q < n) {
+        const j = order[q];
+        if (j !== i) {
+          const dy = Math.abs(yc[j] - ay);
+          const lim = Math.min(ah, halfH[j]);
+          if (dy > lim) break; // sorted by y, so further neighbors are even farther
+          if (Math.abs(xc[j] - ax) <= maxX) {
+            keep[i] = 1;
+            break;
+          }
+        }
+        q += dir;
+      }
+      if (keep[i]) break;
+    }
+  }
+  const out = [];
+  for (let i = 0; i < n; i++) if (keep[i]) out.push(items[i]);
+  return out;
 }
 
 // ── Occupancy grid ──

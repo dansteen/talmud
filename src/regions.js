@@ -26,7 +26,7 @@
 
 const DEFAULT_CELL_SIZE_PT        = 2;     // PDF points per grid cell
 const DEFAULT_CLOSE_RADIUS        = 0;     // cells, Euclidean (fractional ok)
-const DEFAULT_MIN_REGION_FRAC     = 0;     // drop components < this fraction of grid area
+const DEFAULT_MIN_REGION_FRAC     = 0.0005; // drop components < this fraction of grid area
 const DEFAULT_MAX_ISOLATED_RUN    = 25;    // cells: max run length to count as catchword
 const DEFAULT_MIN_ISOLATION_GAP   = 10;    // cells: min whitespace on each side
 const DEFAULT_MIN_EMPTY_BELOW     = 0;     // cells: min empty rows directly below the run

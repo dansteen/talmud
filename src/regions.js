@@ -24,22 +24,36 @@
 const DEFAULT_CELL_SIZE_PT = 4;        // PDF points per grid cell
 const DEFAULT_CLOSE_RADIUS = 1;        // cells; bridges ≤ 2*r*cellSize PDF pt
 const DEFAULT_MIN_REGION_FRAC = 0.002; // drop components < 0.2% of grid area
+const DEFAULT_NOISE_MIN_CELLS = 5;     // drop raw-grid components < this many cells
 
 // Bridging math: a closing of radius `r` cells fills any whitespace channel
 // up to `2*r` cells wide. With cellSize=4 and r=1 that's 8 PDF pt — wide
 // enough to bridge inter-line gaps (typically 3–5 pt) and intra-region
 // paragraph breaks, narrow enough to leave the inter-region channels (5–15
 // pt on a Vilna daf) intact. Tunable via ?closeRadius=&cellSize= in the URL.
+//
+// `noiseMinCells` runs an extra connected-components pass on the *raw* grid
+// (before closing) and drops any component smaller than this. Catches
+// catchwords (the single word at the bottom of each section pointing to the
+// next page), page numbers, and stray glyphs — so they can't bridge into
+// adjacent regions during the closing step.
 
 export function detectRegions(items, pageW, pageH, opts = {}) {
-  const cellSize    = opts.cellSize          ?? DEFAULT_CELL_SIZE_PT;
-  const closeRadius = opts.closeRadius       ?? DEFAULT_CLOSE_RADIUS;
-  const minFrac     = opts.minRegionFraction ?? DEFAULT_MIN_REGION_FRAC;
+  const cellSize      = opts.cellSize          ?? DEFAULT_CELL_SIZE_PT;
+  const closeRadius   = opts.closeRadius       ?? DEFAULT_CLOSE_RADIUS;
+  const minFrac       = opts.minRegionFraction ?? DEFAULT_MIN_REGION_FRAC;
+  const noiseMinCells = opts.noiseMinCells     ?? DEFAULT_NOISE_MIN_CELLS;
 
   const gridW = Math.max(1, Math.ceil(pageW / cellSize));
   const gridH = Math.max(1, Math.ceil(pageH / cellSize));
 
   let grid = buildOccupancyGrid(items, gridW, gridH, cellSize);
+  // Pre-closing noise filter: drop tiny isolated components (catchwords,
+  // page numbers, stray glyphs) on the raw grid before they can bridge to
+  // anything during the closing step.
+  if (noiseMinCells > 0) {
+    grid = removeTinyComponents(grid, gridW, gridH, noiseMinCells);
+  }
   // Closing = dilate then erode. Bridges within-region gaps; preserves
   // between-region channels wider than `closeRadius`.
   grid = dilate(grid, gridW, gridH, closeRadius);
@@ -134,9 +148,13 @@ function erode(grid, gridW, gridH, radius) {
 }
 
 // ── Connected components (4-neighbor flood fill) ──
+//
+// Uint32 labels because raw-grid CC (used by the noise filter) can produce
+// thousands of components — every word/line fragment before closing — and
+// Uint16 (max 65535) is uncomfortably close to that ceiling on dense pages.
 
 function connectedComponents(mask, gridW, gridH) {
-  const labels = new Uint16Array(gridW * gridH);
+  const labels = new Uint32Array(gridW * gridH);
   let next = 1;
   const stack = []; // reused across components
 
@@ -162,6 +180,24 @@ function connectedComponents(mask, gridW, gridH) {
     }
   }
   return { labels, count: next - 1 };
+}
+
+// Drop connected components smaller than `minCells` from the binary grid.
+// Used as a pre-closing noise filter so isolated stray text (catchwords,
+// page numbers, single glyphs) can't bridge into adjacent regions.
+function removeTinyComponents(grid, gridW, gridH, minCells) {
+  const { labels, count } = connectedComponents(grid, gridW, gridH);
+  const sizes = new Uint32Array(count + 1);
+  for (let i = 0; i < grid.length; i++) {
+    const lbl = labels[i];
+    if (lbl !== 0) sizes[lbl]++;
+  }
+  const out = new Uint8Array(gridW * gridH);
+  for (let i = 0; i < grid.length; i++) {
+    const lbl = labels[i];
+    if (lbl !== 0 && sizes[lbl] >= minCells) out[i] = 1;
+  }
+  return out;
 }
 
 // ── Per-region statistics ──

@@ -374,11 +374,11 @@ function recomputeRegions(opts) {
 
 const PANEL_CONTROLS = [
   { key: 'cellSize',          label: 'cellSize (pt)',     min: 1, max: 10,   step: 0.5,    def: 2 },
-  { key: 'closeRadius',       label: 'closeRadius',       min: 0, max: 6,    step: 0.25,   def: 1.5 },
+  { key: 'closeRadius',       label: 'closeRadius',       min: 0, max: 6,    step: 0.25,   def: 0 },
   { key: 'maxIsolatedRun',    label: 'maxIsolatedRun',    min: 0, max: 100,  step: 1,      def: 25 },
   { key: 'minIsolationGap',   label: 'minIsolationGap',   min: 0, max: 50,   step: 1,      def: 10 },
-  { key: 'minEmptyBelow',     label: 'minEmptyBelow',     min: 0, max: 30,   step: 1,      def: 3 },
-  { key: 'minRegionFraction', label: 'minRegionFrac',     min: 0, max: 0.02, step: 0.0005, def: 0.002 },
+  { key: 'minEmptyBelow',     label: 'minEmptyBelow',     min: 0, max: 30,   step: 1,      def: 0 },
+  { key: 'minRegionFraction', label: 'minRegionFrac',     min: 0, max: 0.02, step: 0.0005, def: 0 },
 ];
 
 let panelStatusEl = null;

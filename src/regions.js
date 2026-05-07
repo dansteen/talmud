@@ -7,10 +7,11 @@
 // Pipeline:
 //   1. Rasterize text-item bboxes onto a low-resolution occupancy grid
 //      (≈ 2 PDF points per cell).
-//   2. Morphologically close (dilate then erode by `closeRadius`) to bridge
-//      gaps narrower than the closing width. Picks up inter-line gaps and
-//      word gaps within a region; doesn't reach across the wider whitespace
-//      between regions.
+//   2. Morphologically close (dilate then erode) with a separable
+//      rectangular kernel of size (2·closeRadiusX+1) × (2·closeRadiusY+1)
+//      to bridge gaps narrower than the kernel. Independent X/Y radii so
+//      we can reach across line gaps (Y) without bridging adjacent
+//      columns (X).
 //   3. 4-neighbor connected-components label the closed mask. Each
 //      component is a region — any shape, any topology.
 //   4. Drop tiny components (page numbers, isolated marks).
@@ -25,7 +26,8 @@
 //   }
 
 const DEFAULT_CELL_SIZE_PT        = 2;     // PDF points per grid cell
-const DEFAULT_CLOSE_RADIUS        = 0;     // cells, Euclidean (fractional ok)
+const DEFAULT_CLOSE_RADIUS_X      = 0;     // cells: horizontal closing radius
+const DEFAULT_CLOSE_RADIUS_Y      = 0;     // cells: vertical closing radius
 const DEFAULT_MIN_REGION_FRAC     = 0.0005; // drop components < this fraction of grid area
 const DEFAULT_MAX_ISOLATED_RUN    = 25;    // cells: max run length to count as catchword
 const DEFAULT_MIN_ISOLATION_GAP   = 10;    // cells: min whitespace on each side
@@ -34,7 +36,8 @@ const DEFAULT_HEADER_SPLIT_RATIO  = 1.4;   // ≤1 disables; otherwise items at 
 
 export function detectRegions(items, pageW, pageH, opts = {}) {
   const cellSize          = opts.cellSize          ?? DEFAULT_CELL_SIZE_PT;
-  const closeRadius       = opts.closeRadius       ?? DEFAULT_CLOSE_RADIUS;
+  const closeRadiusX      = Math.round(opts.closeRadiusX ?? DEFAULT_CLOSE_RADIUS_X);
+  const closeRadiusY      = Math.round(opts.closeRadiusY ?? DEFAULT_CLOSE_RADIUS_Y);
   const minRegionFraction = opts.minRegionFraction ?? DEFAULT_MIN_REGION_FRAC;
   const maxIsolatedRun    = opts.maxIsolatedRun    ?? DEFAULT_MAX_ISOLATED_RUN;
   const minIsolationGap   = opts.minIsolationGap   ?? DEFAULT_MIN_ISOLATION_GAP;
@@ -54,13 +57,13 @@ export function detectRegions(items, pageW, pageH, opts = {}) {
     rawGrid = demoteIsolatedRuns(rawGrid, gridW, gridH, maxIsolatedRun, minIsolationGap, minEmptyBelow);
   }
 
-  // Closing bridges intra-region gaps without reaching across the wider
-  // inter-region whitespace. closeRadius is a Euclidean distance in cells
-  // and accepts fractional values (1.0, 1.5, 2.0, …).
+  // Closing with a separable rectangular kernel. closeRadiusY > closeRadiusX
+  // bridges inter-line gaps within a column without bridging the wider
+  // whitespace between columns.
   let workGrid = rawGrid;
-  if (closeRadius > 0) {
-    workGrid = dilate(rawGrid, gridW, gridH, closeRadius);
-    workGrid = erode (workGrid, gridW, gridH, closeRadius);
+  if (closeRadiusX > 0 || closeRadiusY > 0) {
+    workGrid = dilateRect(rawGrid, gridW, gridH, closeRadiusX, closeRadiusY);
+    workGrid = erodeRect (workGrid, gridW, gridH, closeRadiusX, closeRadiusY);
   }
 
   const { labels, count } = connectedComponents(workGrid, gridW, gridH);
@@ -160,99 +163,81 @@ function demoteIsolatedRuns(grid, gridW, gridH, maxRunLen, minGap, minEmptyBelow
   return out;
 }
 
-// ── Morphological dilation / erosion via squared Euclidean distance ──
+// ── Morphological dilation / erosion: separable rectangular kernel ──
 //
-// Built on Felzenszwalb-Huttenlocher's exact O(N) squared-distance
-// transform. Dilation = "cells whose distance to the nearest occupied
-// cell is ≤ radius"; erosion = the dual operation on the inverted mask.
-// Because the test is `d² ≤ r²`, the radius can be any non-negative
-// real number — fractional values produce a real change in coverage,
-// not just an integer rounding.
+// Closing with kernel size (2·rx+1) × (2·ry+1). The horizontal and vertical
+// passes are independent, so we get full anisotropy "for free" — useful
+// because line-spacing gaps run vertically while column gaps run
+// horizontally. Boundary cells use a truncated window (out-of-bounds cells
+// are ignored), which slightly under-erodes near the page edge but text in
+// our PDFs sits well inside the margins.
 
-function dilate(grid, gridW, gridH, radius) {
-  if (radius <= 0) return new Uint8Array(grid);
-  const d2 = sedt(grid, gridW, gridH);
-  const r2 = radius * radius;
-  const out = new Uint8Array(gridW * gridH);
-  for (let i = 0; i < d2.length; i++) {
-    if (d2[i] <= r2) out[i] = 1;
-  }
-  return out;
-}
-
-function erode(grid, gridW, gridH, radius) {
-  if (radius <= 0) return new Uint8Array(grid);
-  const inv = new Uint8Array(gridW * gridH);
-  for (let i = 0; i < grid.length; i++) inv[i] = grid[i] ? 0 : 1;
-  const d2 = sedt(inv, gridW, gridH);
-  const r2 = radius * radius;
-  const out = new Uint8Array(gridW * gridH);
-  for (let i = 0; i < d2.length; i++) {
-    if (d2[i] > r2) out[i] = 1;
-  }
-  return out;
-}
-
-// Squared Euclidean distance transform (Felzenszwalb-Huttenlocher 2004).
-// For each cell, returns the squared distance to the nearest occupied
-// cell. Two passes of the 1-D parabolic-envelope DT — once over rows,
-// once over columns — together give the exact 2-D answer in O(N).
-function sedt(mask, gridW, gridH) {
-  const INF = 1e20;
-  const out = new Float64Array(gridW * gridH);
-  for (let i = 0; i < out.length; i++) out[i] = mask[i] ? 0 : INF;
-
-  // Row pass: 1-D SEDT along each row, written back into `out`.
-  const rowF = new Float64Array(gridW);
-  const rowD = new Float64Array(gridW);
-  for (let y = 0; y < gridH; y++) {
-    const base = y * gridW;
-    for (let x = 0; x < gridW; x++) rowF[x] = out[base + x];
-    sedt1d(rowF, rowD, gridW);
-    for (let x = 0; x < gridW; x++) out[base + x] = rowD[x];
-  }
-
-  // Column pass: 1-D SEDT along each column.
-  const colF = new Float64Array(gridH);
-  const colD = new Float64Array(gridH);
-  for (let x = 0; x < gridW; x++) {
-    for (let y = 0; y < gridH; y++) colF[y] = out[y * gridW + x];
-    sedt1d(colF, colD, gridH);
-    for (let y = 0; y < gridH; y++) out[y * gridW + x] = colD[y];
-  }
-
-  return out;
-}
-
-// 1-D distance transform of an arbitrary sampled function f, computing
-// d[q] = min over p of (q - p)² + f[p]. O(n) using the lower-envelope
-// of parabolas. (See Felzenszwalb-Huttenlocher 2004 §2.)
-function sedt1d(f, d, n) {
-  const v = new Int32Array(n);
-  const z = new Float64Array(n + 1);
-  let k = 0;
-  v[0] = 0;
-  z[0] = -Infinity;
-  z[1] = Infinity;
-  for (let q = 1; q < n; q++) {
-    let s;
-    while (true) {
-      const vk = v[k];
-      s = ((f[q] + q * q) - (f[vk] + vk * vk)) / (2 * (q - vk));
-      if (s > z[k]) break;
-      k--;
+function dilateRect(grid, gridW, gridH, rx, ry) {
+  let src = grid;
+  if (rx > 0) {
+    const out = new Uint8Array(gridW * gridH);
+    for (let y = 0; y < gridH; y++) {
+      const base = y * gridW;
+      for (let x = 0; x < gridW; x++) {
+        const x0 = Math.max(0, x - rx);
+        const x1 = Math.min(gridW - 1, x + rx);
+        for (let nx = x0; nx <= x1; nx++) {
+          if (src[base + nx]) { out[base + x] = 1; break; }
+        }
+      }
     }
-    k++;
-    v[k] = q;
-    z[k] = s;
-    z[k + 1] = Infinity;
+    src = out;
   }
-  k = 0;
-  for (let q = 0; q < n; q++) {
-    while (z[k + 1] < q) k++;
-    const dq = q - v[k];
-    d[q] = dq * dq + f[v[k]];
+  if (ry > 0) {
+    const out = new Uint8Array(gridW * gridH);
+    for (let x = 0; x < gridW; x++) {
+      for (let y = 0; y < gridH; y++) {
+        const y0 = Math.max(0, y - ry);
+        const y1 = Math.min(gridH - 1, y + ry);
+        for (let ny = y0; ny <= y1; ny++) {
+          if (src[ny * gridW + x]) { out[y * gridW + x] = 1; break; }
+        }
+      }
+    }
+    src = out;
   }
+  return src === grid ? new Uint8Array(grid) : src;
+}
+
+function erodeRect(grid, gridW, gridH, rx, ry) {
+  let src = grid;
+  if (rx > 0) {
+    const out = new Uint8Array(gridW * gridH);
+    for (let y = 0; y < gridH; y++) {
+      const base = y * gridW;
+      for (let x = 0; x < gridW; x++) {
+        const x0 = Math.max(0, x - rx);
+        const x1 = Math.min(gridW - 1, x + rx);
+        let allOn = 1;
+        for (let nx = x0; nx <= x1; nx++) {
+          if (!src[base + nx]) { allOn = 0; break; }
+        }
+        out[base + x] = allOn;
+      }
+    }
+    src = out;
+  }
+  if (ry > 0) {
+    const out = new Uint8Array(gridW * gridH);
+    for (let x = 0; x < gridW; x++) {
+      for (let y = 0; y < gridH; y++) {
+        const y0 = Math.max(0, y - ry);
+        const y1 = Math.min(gridH - 1, y + ry);
+        let allOn = 1;
+        for (let ny = y0; ny <= y1; ny++) {
+          if (!src[ny * gridW + x]) { allOn = 0; break; }
+        }
+        out[y * gridW + x] = allOn;
+      }
+    }
+    src = out;
+  }
+  return src === grid ? new Uint8Array(grid) : src;
 }
 
 // ── Connected components (4-neighbor flood fill) ──

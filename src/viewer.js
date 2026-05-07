@@ -376,10 +376,10 @@ function recomputeRegions(opts) {
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'cellSize',          label: 'cellSize (pt)',     min: 1, max: 10,   step: 0.5,    def: 2 },
+  { key: 'cellSize',          label: 'cellSize (pt)',     min: 1, max: 10,   step: 0.5,    def: 1 },
   { key: 'closeRadiusX',      label: 'closeRadiusX',      min: 0, max: 10,   step: 1,      def: 0 },
   { key: 'closeRadiusY',      label: 'closeRadiusY',      min: 0, max: 20,   step: 1,      def: 0 },
-  { key: 'closeRadiusYSide',  label: 'closeRadiusYSide',  min: 0, max: 30,   step: 1,      def: 0 },
+  { key: 'closeRadiusYSide',  label: 'closeRadiusYSide',  min: 0, max: 30,   step: 1,      def: 5 },
   { key: 'sideZoneFraction',  label: 'sideZoneFraction',  min: 0, max: 0.4,  step: 0.01,   def: 0.15 },
   { key: 'maxIsolatedRun',    label: 'maxIsolatedRun',    min: 0, max: 100,  step: 1,      def: 25 },
   { key: 'minIsolationGap',   label: 'minIsolationGap',   min: 0, max: 50,   step: 1,      def: 10 },

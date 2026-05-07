@@ -50,3 +50,8 @@ npm run preview  # serve dist/ locally
 ## Repository
 
 - GitHub: https://github.com/dansteen/talmud
+
+## Deployment
+
+- Production deploys from the `deploy` branch.
+- After committing changes, fast-forward `origin/deploy` to the working branch tip by default (`git push origin <branch>:deploy`). The user has opted into automatic deploys; only hold off if they explicitly say so.

@@ -31,6 +31,7 @@ function regionTuneFromUrl() {
   const cs  = num('cellSize');             if (cs  !== null) opts.cellSize = cs;
   const cd  = num('channelDensity');       if (cd  !== null) opts.channelDensity = cd;
   const cmt = num('channelMinThickness');  if (cmt !== null) opts.channelMinThickness = cmt;
+  const md  = num('maxDepth');             if (md  !== null) opts.maxDepth = md;
   const mf  = num('minRegionFrac');        if (mf  !== null) opts.minRegionFraction = mf;
   return opts;
 }
@@ -374,6 +375,7 @@ const PANEL_CONTROLS = [
   { key: 'cellSize',             label: 'cellSize (pt)',     min: 1,  max: 10,   step: 0.5,    def: 4 },
   { key: 'channelDensity',       label: 'channelDensity',    min: 0,  max: 0.5,  step: 0.01,   def: 0.10 },
   { key: 'channelMinThickness',  label: 'channelMinThick',   min: 1,  max: 15,   step: 1,      def: 3 },
+  { key: 'maxDepth',             label: 'maxDepth',          min: 1,  max: 12,   step: 1,      def: 8 },
   { key: 'minRegionFraction',    label: 'minRegionFrac',     min: 0,  max: 0.02, step: 0.0005, def: 0.002 },
 ];
 

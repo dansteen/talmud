@@ -1,27 +1,29 @@
-// Region detection by whitespace-channel decomposition.
+// Region detection by recursive whitespace-channel decomposition (X-Y cut).
 //
-// Top-down approach: rasterize text-item bboxes onto an occupancy grid,
-// then find horizontal "whitespace bands" (rows that are ≥ 90% empty) and
-// vertical "whitespace bands" (columns that are ≥ 90% empty within a strip).
-// The bands carve the page into rectangles; each non-empty rectangle is a
-// region.
+// Approach: rasterize text-item bboxes onto an occupancy grid. Then split
+// the page recursively — at each level, find candidate channels on both
+// axes (rows that are ≥ 90 % whitespace, and columns that are ≥ 90 %
+// whitespace within the current sub-region) and apply the axis with the
+// most cuts. Continue recursing on each resulting sub-rectangle until no
+// channels are found on either axis.
 //
 // Two thresholds:
 //   - `channelDensity`: a row/column counts as whitespace if its occupied
-//     fraction is at most this value (default 0.10 → ≥ 90% whitespace).
+//     fraction is at most this value (default 0.10 → ≥ 90 % whitespace).
 //   - `channelMinThickness`: how many consecutive whitespace rows/cols are
 //     needed to count as a real channel (default 3 cells). Filters out
 //     individual inter-line gaps that happen to be sparse.
 //
-// Vertical channels are recomputed *per horizontal strip* — different
-// strips of the page have different column structures (e.g., the header
-// band has no vertical channels; the middle has the Rashi/Gemara/Tosfos
-// columns; the bottom may have its own column layout).
+// Densities are recomputed *within the sub-region* at each recursion level
+// — a horizontal channel that spans Rashi's column but not Gemara's gets
+// detected once we've already cut down to Rashi (because the density
+// numerator no longer includes Gemara's text).
 //
-// Output shape matches the previous detector:
+// Output:
 //   {
 //     regions: [{ id, bbox, fontSize, itemCount, pixelCount }, …],
 //     labels:  Uint32Array(gridW * gridH)  // 0 = whitespace, 1..N = region id
+//     grid:    Uint8Array(gridW * gridH)   // raw occupancy (for visualization)
 //     gridW, gridH, cellSize
 //   }
 
@@ -29,38 +31,23 @@ const DEFAULT_CELL_SIZE_PT          = 4;
 const DEFAULT_CHANNEL_DENSITY       = 0.10;  // ≤ 10% occupied = whitespace
 const DEFAULT_CHANNEL_MIN_THICKNESS = 3;     // cells
 const DEFAULT_MIN_REGION_FRAC       = 0.002; // drop rectangles < 0.2% of grid
+const DEFAULT_MAX_DEPTH             = 8;     // X-Y cut recursion depth cap
 
 export function detectRegions(items, pageW, pageH, opts = {}) {
   const cellSize             = opts.cellSize             ?? DEFAULT_CELL_SIZE_PT;
   const channelDensity       = opts.channelDensity       ?? DEFAULT_CHANNEL_DENSITY;
   const channelMinThickness  = opts.channelMinThickness  ?? DEFAULT_CHANNEL_MIN_THICKNESS;
   const minRegionFraction    = opts.minRegionFraction    ?? DEFAULT_MIN_REGION_FRAC;
+  const maxDepth             = opts.maxDepth             ?? DEFAULT_MAX_DEPTH;
 
   const gridW = Math.max(1, Math.ceil(pageW / cellSize));
   const gridH = Math.max(1, Math.ceil(pageH / cellSize));
+  const grid  = buildOccupancyGrid(items, gridW, gridH, cellSize);
 
-  const grid = buildOccupancyGrid(items, gridW, gridH, cellSize);
+  const root = { x: 0, y: 0, w: gridW, h: gridH };
+  const rectangles = xyCut(grid, gridW, root, maxDepth, channelDensity, channelMinThickness);
 
-  // Step 1: find horizontal channels → page splits into horizontal strips.
-  const rowDensities = computeRowDensities(grid, gridW, gridH);
-  const hStrips = stripsBetweenChannels(
-    rowDensities, gridH, channelDensity, channelMinThickness,
-  );
-
-  // Step 2: within each h-strip, find vertical channels → strip splits
-  // into rectangles. Each rectangle is a candidate region.
-  const rectangles = [];
-  for (const strip of hStrips) {
-    const colDensities = computeColDensitiesInStrip(grid, gridW, strip);
-    const vStrips = stripsBetweenChannels(
-      colDensities, gridW, channelDensity, channelMinThickness,
-    );
-    for (const v of vStrips) {
-      rectangles.push({ x: v.start, y: strip.start, w: v.end - v.start, h: strip.end - strip.start });
-    }
-  }
-
-  // Step 3: per rectangle, compute occupied cells + item stats; filter tiny.
+  // Per rectangle: occupied cells + item stats; filter tiny.
   const minCells = Math.max(8, Math.round(minRegionFraction * gridW * gridH));
   const regions = [];
   let nextId = 1;
@@ -98,6 +85,106 @@ export function detectRegions(items, pageW, pageH, opts = {}) {
   return { regions, labels, grid, gridW, gridH, cellSize };
 }
 
+// ── Recursive X-Y cut ──
+
+function xyCut(grid, gridW, region, depth, density, minThickness) {
+  if (depth <= 0 || region.w < 2 * minThickness || region.h < 2 * minThickness) {
+    return [region];
+  }
+
+  const hChannels = findChannels(grid, gridW, region, 'horizontal', density, minThickness);
+  const vChannels = findChannels(grid, gridW, region, 'vertical',   density, minThickness);
+
+  if (hChannels.length === 0 && vChannels.length === 0) {
+    return [region];
+  }
+
+  // Pick the axis with more cuts. Ties go to horizontal (matches Vilna's
+  // top-down reading order — header / body / footer is usually the
+  // strongest division).
+  let axis, channels;
+  if (hChannels.length === 0) {
+    axis = 'vertical';   channels = vChannels;
+  } else if (vChannels.length === 0) {
+    axis = 'horizontal'; channels = hChannels;
+  } else if (hChannels.length >= vChannels.length) {
+    axis = 'horizontal'; channels = hChannels;
+  } else {
+    axis = 'vertical';   channels = vChannels;
+  }
+
+  const subs = stripsFromChannels(region, axis, channels);
+  const out = [];
+  for (const sub of subs) {
+    out.push(...xyCut(grid, gridW, sub, depth - 1, density, minThickness));
+  }
+  return out;
+}
+
+// Find runs of whitespace cells along an axis within a sub-region.
+// `densities` are computed using only the cells inside `region`, so a
+// channel that spans only part of the page (e.g., a horizontal break inside
+// Rashi's column) is detectable once we've recursed down to that column.
+function findChannels(grid, gridW, region, axis, threshold, minThickness) {
+  const len = axis === 'horizontal' ? region.h : region.w;
+  const densities = new Float32Array(len);
+
+  if (axis === 'horizontal') {
+    // Density per row, counting only cells in [region.x, region.x + region.w).
+    if (region.w <= 0) return [];
+    for (let dy = 0; dy < len; dy++) {
+      const rowStart = (region.y + dy) * gridW + region.x;
+      let count = 0;
+      for (let dx = 0; dx < region.w; dx++) {
+        if (grid[rowStart + dx]) count++;
+      }
+      densities[dy] = count / region.w;
+    }
+  } else {
+    // Density per column, counting only cells in [region.y, region.y + region.h).
+    if (region.h <= 0) return [];
+    for (let dx = 0; dx < len; dx++) {
+      const x = region.x + dx;
+      let count = 0;
+      for (let dy = 0; dy < region.h; dy++) {
+        if (grid[(region.y + dy) * gridW + x]) count++;
+      }
+      densities[dx] = count / region.h;
+    }
+  }
+
+  const channels = [];
+  let i = 0;
+  while (i < len) {
+    if (densities[i] <= threshold) {
+      const start = i;
+      while (i < len && densities[i] <= threshold) i++;
+      const end = i;
+      if (end - start >= minThickness) channels.push({ start, end });
+    } else {
+      i++;
+    }
+  }
+  return channels;
+}
+
+// Convert {start, end} channel intervals into the strips between them,
+// expressed as absolute grid-coordinate sub-rectangles of `region`.
+function stripsFromChannels(region, axis, channels) {
+  const len = axis === 'horizontal' ? region.h : region.w;
+  const ranges = [];
+  let prevEnd = 0;
+  for (const ch of channels) {
+    if (ch.start > prevEnd) ranges.push({ start: prevEnd, end: ch.start });
+    prevEnd = ch.end;
+  }
+  if (prevEnd < len) ranges.push({ start: prevEnd, end: len });
+
+  return ranges.map(s => axis === 'horizontal'
+    ? { x: region.x, y: region.y + s.start, w: region.w, h: s.end - s.start }
+    : { x: region.x + s.start, y: region.y, w: s.end - s.start, h: region.h });
+}
+
 // ── Occupancy grid ──
 
 function buildOccupancyGrid(items, gridW, gridH, cellSize) {
@@ -113,70 +200,6 @@ function buildOccupancyGrid(items, gridW, gridH, cellSize) {
     }
   }
   return grid;
-}
-
-// ── Density computation ──
-
-function computeRowDensities(grid, gridW, gridH) {
-  const out = new Float32Array(gridH);
-  for (let y = 0; y < gridH; y++) {
-    let count = 0;
-    const row = y * gridW;
-    for (let x = 0; x < gridW; x++) if (grid[row + x]) count++;
-    out[y] = count / gridW;
-  }
-  return out;
-}
-
-function computeColDensitiesInStrip(grid, gridW, strip) {
-  const stripH = strip.end - strip.start;
-  const out = new Float32Array(gridW);
-  if (stripH <= 0) return out;
-  for (let x = 0; x < gridW; x++) {
-    let count = 0;
-    for (let y = strip.start; y < strip.end; y++) {
-      if (grid[y * gridW + x]) count++;
-    }
-    out[x] = count / stripH;
-  }
-  return out;
-}
-
-// ── Channel / strip extraction ──
-//
-// Mark each index as a channel cell if its density is below the threshold.
-// Group consecutive channel cells into channel bands; only bands that are at
-// least `minThickness` wide count as real channels (filters single-row
-// inter-line gaps that happen to be sparse). The strips returned are the
-// non-channel ranges in between.
-
-function stripsBetweenChannels(densities, len, threshold, minThickness) {
-  const isChannelCell = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    isChannelCell[i] = densities[i] <= threshold ? 1 : 0;
-  }
-
-  const channels = [];
-  let i = 0;
-  while (i < len) {
-    if (isChannelCell[i]) {
-      const start = i;
-      while (i < len && isChannelCell[i]) i++;
-      const end = i;
-      if (end - start >= minThickness) channels.push({ start, end });
-    } else {
-      i++;
-    }
-  }
-
-  const strips = [];
-  let prevEnd = 0;
-  for (const ch of channels) {
-    if (ch.start > prevEnd) strips.push({ start: prevEnd, end: ch.start });
-    prevEnd = ch.end;
-  }
-  if (prevEnd < len) strips.push({ start: prevEnd, end: len });
-  return strips;
 }
 
 // ── Per-rectangle stats ──

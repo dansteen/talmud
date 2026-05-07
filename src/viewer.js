@@ -28,11 +28,10 @@ function regionTuneFromUrl() {
     const v = parseFloat(p.get(key));
     return Number.isFinite(v) ? v : null;
   };
-  const cs = num('cellSize');         if (cs !== null) opts.cellSize = cs;
-  const cr = num('closeRadius');      if (cr !== null) opts.closeRadius = cr;
-  const nm = num('noiseMinCells');    if (nm !== null) opts.noiseMinCells = nm;
-  const sl = num('singleLineMaxX');   if (sl !== null) opts.singleLineMaxX = sl;
-  const mf = num('minRegionFrac');    if (mf !== null) opts.minRegionFraction = mf;
+  const cs  = num('cellSize');             if (cs  !== null) opts.cellSize = cs;
+  const cd  = num('channelDensity');       if (cd  !== null) opts.channelDensity = cd;
+  const cmt = num('channelMinThickness');  if (cmt !== null) opts.channelMinThickness = cmt;
+  const mf  = num('minRegionFrac');        if (mf  !== null) opts.minRegionFraction = mf;
   return opts;
 }
 
@@ -372,11 +371,10 @@ function recomputeRegions(opts) {
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'cellSize',          label: 'cellSize (pt)',     min: 1,  max: 10,   step: 0.5,    def: 4 },
-  { key: 'closeRadius',       label: 'closeRadius',       min: 0,  max: 6,    step: 1,      def: 1 },
-  { key: 'noiseMinCells',     label: 'noiseMinCells',     min: 0,  max: 50,   step: 1,      def: 5 },
-  { key: 'singleLineMaxX',    label: 'singleLine maxX pt', min: 0,  max: 200,  step: 5,      def: 0 },
-  { key: 'minRegionFraction', label: 'minRegionFrac',     min: 0,  max: 0.02, step: 0.0005, def: 0.002 },
+  { key: 'cellSize',             label: 'cellSize (pt)',     min: 1,  max: 10,   step: 0.5,    def: 4 },
+  { key: 'channelDensity',       label: 'channelDensity',    min: 0,  max: 0.5,  step: 0.01,   def: 0.10 },
+  { key: 'channelMinThickness',  label: 'channelMinThick',   min: 1,  max: 15,   step: 1,      def: 3 },
+  { key: 'minRegionFraction',    label: 'minRegionFrac',     min: 0,  max: 0.02, step: 0.0005, def: 0.002 },
 ];
 
 let panelStatusEl = null;

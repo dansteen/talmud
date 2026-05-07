@@ -22,8 +22,14 @@
 //   }
 
 const DEFAULT_CELL_SIZE_PT = 4;        // PDF points per grid cell
-const DEFAULT_CLOSE_RADIUS = 5;        // cells (≈ 20 PDF points)
-const DEFAULT_MIN_REGION_FRAC = 0.005; // drop components < 0.5% of grid area
+const DEFAULT_CLOSE_RADIUS = 1;        // cells; bridges ≤ 2*r*cellSize PDF pt
+const DEFAULT_MIN_REGION_FRAC = 0.002; // drop components < 0.2% of grid area
+
+// Bridging math: a closing of radius `r` cells fills any whitespace channel
+// up to `2*r` cells wide. With cellSize=4 and r=1 that's 8 PDF pt — wide
+// enough to bridge inter-line gaps (typically 3–5 pt) and intra-region
+// paragraph breaks, narrow enough to leave the inter-region channels (5–15
+// pt on a Vilna daf) intact. Tunable via ?closeRadius=&cellSize= in the URL.
 
 export function detectRegions(items, pageW, pageH, opts = {}) {
   const cellSize    = opts.cellSize          ?? DEFAULT_CELL_SIZE_PT;

@@ -15,6 +15,21 @@ window.addEventListener('keydown', e => {
   if (e.key === 'd' || e.key === 'D') overlay.classList.toggle('visible');
 });
 
+// Read ?cellSize=&closeRadius=&minRegionFrac= so the detection knobs can be
+// tuned in the URL while we dial them in.
+function regionTuneFromUrl() {
+  const p = new URLSearchParams(location.search);
+  const opts = {};
+  const num = (key) => {
+    const v = parseFloat(p.get(key));
+    return Number.isFinite(v) ? v : null;
+  };
+  const cs = num('cellSize');         if (cs !== null) opts.cellSize = cs;
+  const cr = num('closeRadius');      if (cr !== null) opts.closeRadius = cr;
+  const mf = num('minRegionFrac');    if (mf !== null) opts.minRegionFraction = mf;
+  return opts;
+}
+
 // Page geometry (set once per loaded page)
 let pageW = 1;       // natural PDF width (PDF points)
 let pageH = 1;       // natural PDF height (PDF points)
@@ -299,10 +314,20 @@ export async function loadPage(url, savedViewState = null) {
   textBbox = data.textBbox;
 
   // Detect regions from the per-item rects: low-res occupancy grid,
-  // morphological closing, connected components. Gives us per-region bbox
-  // + median fontSize + a labeled grid for hit-testing.
-  regionsData = detectRegions(textItems, pageW, pageH);
+  // morphological closing, connected components. Tunable via URL params
+  // ?cellSize=&closeRadius=&minRegionFrac= so we can experiment without
+  // a redeploy while we figure out the right defaults.
+  regionsData = detectRegions(textItems, pageW, pageH, regionTuneFromUrl());
   regions = regionsData.regions;
+  if (DEBUG_REGIONS) {
+    const { gridW, gridH, cellSize, regions: regs } = regionsData;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[regions] cell=${cellSize}pt grid=${gridW}x${gridH}`,
+      `→ ${regs.length} regions`,
+      regs.map(r => `#${r.id} fs=${r.fontSize.toFixed(1)} cells=${r.pixelCount} items=${r.itemCount}`),
+    );
+  }
   drawRegionOverlay();
 
   // If we have a saved zoom/center for this page, render at that scale and

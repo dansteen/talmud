@@ -34,7 +34,6 @@ const DEFAULT_MIN_REGION_FRAC      = 0.0005; // drop components < this fraction 
 const DEFAULT_MAX_ISOLATED_RUN     = 25;    // cells: max run length to count as catchword
 const DEFAULT_MIN_ISOLATION_GAP    = 10;    // cells: min whitespace on each side
 const DEFAULT_MIN_EMPTY_BELOW      = 0;     // cells: min empty rows directly below the run
-const DEFAULT_HEADER_SPLIT_RATIO   = 1.4;   // ≤1 disables; otherwise items at ≥ratio×region-median are headers
 
 export function detectRegions(items, pageW, pageH, opts = {}) {
   const cellSize          = opts.cellSize          ?? DEFAULT_CELL_SIZE_PT;
@@ -46,7 +45,6 @@ export function detectRegions(items, pageW, pageH, opts = {}) {
   const maxIsolatedRun    = opts.maxIsolatedRun    ?? DEFAULT_MAX_ISOLATED_RUN;
   const minIsolationGap   = opts.minIsolationGap   ?? DEFAULT_MIN_ISOLATION_GAP;
   const minEmptyBelow     = opts.minEmptyBelow     ?? DEFAULT_MIN_EMPTY_BELOW;
-  const headerSplitRatio  = opts.headerSplitRatio  ?? DEFAULT_HEADER_SPLIT_RATIO;
 
   const gridW = Math.max(1, Math.ceil(pageW / cellSize));
   const gridH = Math.max(1, Math.ceil(pageH / cellSize));
@@ -83,14 +81,6 @@ export function detectRegions(items, pageW, pageH, opts = {}) {
 
   const minCells = Math.max(8, Math.round(minRegionFraction * gridW * gridH));
   regions = filterAndRelabel(regions, labels, minCells);
-
-  // Post-pass: split regions that contain ≥2 outsized headers (much larger
-  // font than the region's median). Targets the side meforshim columns,
-  // where each meforesh starts with a name in big type.
-  if (headerSplitRatio > 1) {
-    regions = splitRegionsByHeaders(regions, labels, gridW, gridH, cellSize, items, headerSplitRatio);
-    regions = filterAndRelabel(regions, labels, 0);
-  }
 
   // Visualization paints `rawGrid` cells (so the colored fill follows the
   // actual text shape, not the dilated mask).
@@ -367,112 +357,3 @@ function filterAndRelabel(regions, labels, minCells) {
   return surviving;
 }
 
-// ── Header-split post-pass ──
-//
-// Side-meforshim columns are detected as a single tall region by CC, but they
-// internally consist of N independent commentaries each introduced by a
-// large-font header (the מפרש's name). We split such regions horizontally
-// at each header.
-//
-// We work in *rows*, not individual items: cluster a region's items into
-// text lines by y-proximity, take each line's median fontSize, then
-// compare against the region's body median (the median of all line
-// medians). A "header row" is a line whose median fontSize is
-// ≥ ratio × body. This way a single oversized item embedded in a
-// normal-size line (e.g. an enlarged initial letter or a stray glyph)
-// can't trigger a split — it gets outvoted by the rest of its row.
-// A region is split only if it has ≥2 header rows; the first header
-// stays with the existing region, each subsequent one opens a new
-// sub-region whose top is that header row's top edge.
-
-function splitRegionsByHeaders(regions, labels, gridW, gridH, cellSize, items, ratio) {
-  const byRegion = new Map();
-  for (const it of items) {
-    const cx = Math.floor((it.x + it.w / 2) / cellSize);
-    const cy = Math.floor((it.y + it.h / 2) / cellSize);
-    if (cx < 0 || cy < 0 || cx >= gridW || cy >= gridH) continue;
-    const lbl = labels[cy * gridW + cx];
-    if (lbl === 0) continue;
-    let arr = byRegion.get(lbl);
-    if (!arr) { arr = []; byRegion.set(lbl, arr); }
-    arr.push(it);
-  }
-
-  let nextId = regions.reduce((m, r) => Math.max(m, r.id), 0) + 1;
-  const splitMap = new Map();   // oldId → { rows: number[], ids: number[] }
-
-  for (const r of regions) {
-    const its = byRegion.get(r.id);
-    if (!its || its.length < 2) continue;
-
-    const lines = clusterIntoLines(its);
-    if (lines.length < 2) continue;
-
-    const lineSizes = lines.map(line => median(line.map(it => it.fontSize)));
-    const body = median(lineSizes);
-    if (!body) continue;
-
-    const threshold = ratio * body;
-    const headerIdxs = [];
-    for (let i = 0; i < lineSizes.length; i++) {
-      if (lineSizes[i] >= threshold) headerIdxs.push(i);
-    }
-    if (headerIdxs.length < 2) continue;
-
-    // Skip the first header — section 0 starts at the region top.
-    // Subsequent header rows define split lines at their top y, snapped
-    // to grid rows so a header lands cleanly in its own section.
-    const rows = headerIdxs.slice(1).map(i => {
-      const lineTop = Math.min(...lines[i].map(it => it.y));
-      return Math.floor(lineTop / cellSize);
-    });
-    const ids = [r.id];
-    for (let i = 0; i < rows.length; i++) ids.push(nextId++);
-    splitMap.set(r.id, { rows, ids });
-  }
-
-  if (splitMap.size === 0) return regions;
-
-  for (let y = 0; y < gridH; y++) {
-    const row = y * gridW;
-    for (let x = 0; x < gridW; x++) {
-      const lbl = labels[row + x];
-      if (lbl === 0) continue;
-      const split = splitMap.get(lbl);
-      if (!split) continue;
-      let section = 0;
-      for (let i = 0; i < split.rows.length; i++) {
-        if (y >= split.rows[i]) section = i + 1;
-      }
-      labels[row + x] = split.ids[section];
-    }
-  }
-
-  return computeRegionStats(labels, gridW, gridH, cellSize, items, nextId - 1);
-}
-
-// Group items into text lines by vertical proximity. Two consecutive
-// items (sorted by vertical center) belong to the same line if the gap
-// between their centers is less than half the smaller item's height.
-function clusterIntoLines(items) {
-  if (items.length === 0) return [];
-  const sorted = items.slice().sort((a, b) => (a.y + a.h / 2) - (b.y + b.h / 2));
-  const lines = [[sorted[0]]];
-  for (let i = 1; i < sorted.length; i++) {
-    const it = sorted[i];
-    const cur = lines[lines.length - 1];
-    const prev = cur[cur.length - 1];
-    const itC = it.y + it.h / 2;
-    const prevC = prev.y + prev.h / 2;
-    const threshold = Math.min(it.h, prev.h) * 0.5;
-    if (itC - prevC < threshold) cur.push(it);
-    else lines.push([it]);
-  }
-  return lines;
-}
-
-function median(arr) {
-  if (arr.length === 0) return 0;
-  const s = arr.slice().sort((a, b) => a - b);
-  return s[s.length >> 1];
-}

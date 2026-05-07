@@ -37,7 +37,6 @@ function regionTuneFromUrl() {
   const mig = num('minIsolationGap');  if (mig !== null) opts.minIsolationGap = mig;
   const meb = num('minEmptyBelow');    if (meb !== null) opts.minEmptyBelow = meb;
   const mf  = num('minRegionFrac');    if (mf  !== null) opts.minRegionFraction = mf;
-  const hsr = num('headerSplitRatio'); if (hsr !== null) opts.headerSplitRatio = hsr;
   return opts;
 }
 
@@ -386,7 +385,6 @@ const PANEL_CONTROLS = [
   { key: 'minIsolationGap',   label: 'minIsolationGap',   min: 0, max: 50,   step: 1,      def: 10 },
   { key: 'minEmptyBelow',     label: 'minEmptyBelow',     min: 0, max: 30,   step: 1,      def: 0 },
   { key: 'minRegionFraction', label: 'minRegionFrac',     min: 0, max: 0.02, step: 0.0005, def: 0.0005 },
-  { key: 'headerSplitRatio',  label: 'headerSplitRatio',  min: 1, max: 3,    step: 0.05,   def: 1.4 },
 ];
 
 let panelStatusEl = null;

@@ -362,11 +362,16 @@ function filterAndRelabel(regions, labels, minCells) {
 // large-font header (the מפרש's name). We split such regions horizontally
 // at each header.
 //
-// A region is split iff it contains ≥2 items whose fontSize is ≥ ratio ×
-// the region's own median fontSize. Single oversized items (e.g. an
-// ornamental initial) are ignored. The first header marks the existing
-// region; each subsequent header starts a new sub-region whose top is the
-// header's top edge.
+// We work in *rows*, not individual items: cluster a region's items into
+// text lines by y-proximity, take each line's median fontSize, then
+// compare against the region's body median (the median of all line
+// medians). A "header row" is a line whose median fontSize is
+// ≥ ratio × body. This way a single oversized item embedded in a
+// normal-size line (e.g. an enlarged initial letter or a stray glyph)
+// can't trigger a split — it gets outvoted by the rest of its row.
+// A region is split only if it has ≥2 header rows; the first header
+// stays with the existing region, each subsequent one opens a new
+// sub-region whose top is that header row's top edge.
 
 function splitRegionsByHeaders(regions, labels, gridW, gridH, cellSize, items, ratio) {
   const byRegion = new Map();
@@ -382,20 +387,33 @@ function splitRegionsByHeaders(regions, labels, gridW, gridH, cellSize, items, r
   }
 
   let nextId = regions.reduce((m, r) => Math.max(m, r.id), 0) + 1;
-  const splitMap = new Map();   // oldId → { ys: number[], ids: number[] }
+  const splitMap = new Map();   // oldId → { rows: number[], ids: number[] }
 
   for (const r of regions) {
     const its = byRegion.get(r.id);
-    if (!its || its.length < 2 || !r.fontSize) continue;
-    const threshold = ratio * r.fontSize;
-    const big = its.filter(it => it.fontSize >= threshold);
-    if (big.length < 2) continue;
-    big.sort((a, b) => a.y - b.y);
-    // Section 0 = region top through just before the second header.
-    // Each subsequent header starts a new section at its top row. Snap to
-    // cell rows so a header glyph lands cleanly in its own section rather
-    // than straddling the boundary.
-    const rows = big.slice(1).map(it => Math.floor(it.y / cellSize));
+    if (!its || its.length < 2) continue;
+
+    const lines = clusterIntoLines(its);
+    if (lines.length < 2) continue;
+
+    const lineSizes = lines.map(line => median(line.map(it => it.fontSize)));
+    const body = median(lineSizes);
+    if (!body) continue;
+
+    const threshold = ratio * body;
+    const headerIdxs = [];
+    for (let i = 0; i < lineSizes.length; i++) {
+      if (lineSizes[i] >= threshold) headerIdxs.push(i);
+    }
+    if (headerIdxs.length < 2) continue;
+
+    // Skip the first header — section 0 starts at the region top.
+    // Subsequent header rows define split lines at their top y, snapped
+    // to grid rows so a header lands cleanly in its own section.
+    const rows = headerIdxs.slice(1).map(i => {
+      const lineTop = Math.min(...lines[i].map(it => it.y));
+      return Math.floor(lineTop / cellSize);
+    });
     const ids = [r.id];
     for (let i = 0; i < rows.length; i++) ids.push(nextId++);
     splitMap.set(r.id, { rows, ids });
@@ -419,4 +437,30 @@ function splitRegionsByHeaders(regions, labels, gridW, gridH, cellSize, items, r
   }
 
   return computeRegionStats(labels, gridW, gridH, cellSize, items, nextId - 1);
+}
+
+// Group items into text lines by vertical proximity. Two consecutive
+// items (sorted by vertical center) belong to the same line if the gap
+// between their centers is less than half the smaller item's height.
+function clusterIntoLines(items) {
+  if (items.length === 0) return [];
+  const sorted = items.slice().sort((a, b) => (a.y + a.h / 2) - (b.y + b.h / 2));
+  const lines = [[sorted[0]]];
+  for (let i = 1; i < sorted.length; i++) {
+    const it = sorted[i];
+    const cur = lines[lines.length - 1];
+    const prev = cur[cur.length - 1];
+    const itC = it.y + it.h / 2;
+    const prevC = prev.y + prev.h / 2;
+    const threshold = Math.min(it.h, prev.h) * 0.5;
+    if (itC - prevC < threshold) cur.push(it);
+    else lines.push([it]);
+  }
+  return lines;
+}
+
+function median(arr) {
+  if (arr.length === 0) return 0;
+  const s = arr.slice().sort((a, b) => a - b);
+  return s[s.length >> 1];
 }

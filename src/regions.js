@@ -95,7 +95,7 @@ export function detectRegions(items, pageW, pageH, opts = {}) {
     }
   }
 
-  return { regions, labels, gridW, gridH, cellSize };
+  return { regions, labels, grid, gridW, gridH, cellSize };
 }
 
 // ── Occupancy grid ──

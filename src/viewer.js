@@ -476,7 +476,7 @@ function drawRegionOverlay() {
   overlay.innerHTML = '';
   if (!regionsData) return;
 
-  const { labels, gridW, gridH, cellSize, regions: regs } = regionsData;
+  const { labels, grid, gridW, gridH, cellSize, regions: regs } = regionsData;
 
   // Pixel mask via an offscreen canvas at grid resolution, scaled up via CSS.
   // image-rendering: pixelated keeps the cell boundaries crisp.
@@ -489,15 +489,19 @@ function drawRegionOverlay() {
     'pointer-events:none;';
   const mctx = mask.getContext('2d');
   const img = mctx.createImageData(gridW, gridH);
+  // Paint only occupied cells with the region's color — visualizes the
+  // *actual text shape*, not the (rectangular) region bounds. The bbox
+  // outline drawn below shows the region's interaction bounds.
   for (let i = 0; i < gridW * gridH; i++) {
     const lbl = labels[i];
     if (lbl === 0) continue;
+    if (grid && !grid[i]) continue;
     const [r, g, b] = REGION_COLORS[(lbl - 1) % REGION_COLORS.length];
     const o = i * 4;
     img.data[o + 0] = r;
     img.data[o + 1] = g;
     img.data[o + 2] = b;
-    img.data[o + 3] = 70; // semi-transparent so the underlying text reads
+    img.data[o + 3] = 110; // bumped a bit since we paint fewer cells now
   }
   mctx.putImageData(img, 0, 0);
   overlay.appendChild(mask);

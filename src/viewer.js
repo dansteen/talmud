@@ -10,7 +10,11 @@ const overlay = document.getElementById('region-overlay');
 
 // Region overlay is shown when ?debug=1 is in the URL or after pressing 'd'.
 const DEBUG_REGIONS = new URLSearchParams(location.search).has('debug');
-if (DEBUG_REGIONS) overlay.classList.add('visible');
+if (DEBUG_REGIONS) {
+  overlay.classList.add('visible');
+  // Defer panel creation so the DOM is ready and module state is set up.
+  queueMicrotask(createRegionDebugPanel);
+}
 window.addEventListener('keydown', e => {
   if (e.key === 'd' || e.key === 'D') overlay.classList.toggle('visible');
 });
@@ -315,20 +319,8 @@ export async function loadPage(url, savedViewState = null) {
 
   // Detect regions from the per-item rects: low-res occupancy grid,
   // morphological closing, connected components. Tunable via URL params
-  // ?cellSize=&closeRadius=&minRegionFrac= so we can experiment without
-  // a redeploy while we figure out the right defaults.
-  regionsData = detectRegions(textItems, pageW, pageH, regionTuneFromUrl());
-  regions = regionsData.regions;
-  if (DEBUG_REGIONS) {
-    const { gridW, gridH, cellSize, regions: regs } = regionsData;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[regions] cell=${cellSize}pt grid=${gridW}x${gridH}`,
-      `→ ${regs.length} regions`,
-      regs.map(r => `#${r.id} fs=${r.fontSize.toFixed(1)} cells=${r.pixelCount} items=${r.itemCount}`),
-    );
-  }
-  drawRegionOverlay();
+  // ?cellSize=&closeRadius=&minRegionFrac= and live via the debug panel.
+  recomputeRegions(regionTuneFromUrl());
 
   // If we have a saved zoom/center for this page, render at that scale and
   // place the saved center at the screen center. Otherwise default to home
@@ -346,6 +338,117 @@ export async function loadPage(url, savedViewState = null) {
   }
   constrainView();
   applyTransform(false);
+}
+
+// Current detection options — initial values come from the URL, can be
+// updated live via the debug panel sliders.
+let regionOpts = {};
+
+function recomputeRegions(opts) {
+  if (opts) regionOpts = { ...regionOpts, ...opts };
+  if (!textItems.length) {
+    regionsData = null;
+    regions = null;
+    drawRegionOverlay();
+    return;
+  }
+  regionsData = detectRegions(textItems, pageW, pageH, regionOpts);
+  regions = regionsData.regions;
+  if (DEBUG_REGIONS) {
+    const { gridW, gridH, cellSize, regions: regs } = regionsData;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[regions] cell=${cellSize}pt grid=${gridW}x${gridH}`,
+      `→ ${regs.length} regions`,
+      regs.map(r => `#${r.id} fs=${r.fontSize.toFixed(1)} cells=${r.pixelCount} items=${r.itemCount}`),
+    );
+    updateDebugPanelStatus();
+  }
+  drawRegionOverlay();
+}
+
+// ── Debug controls (?debug=1) ───────────────────────────────────────────
+
+const PANEL_CONTROLS = [
+  { key: 'cellSize',          label: 'cellSize (pt)',  min: 1,  max: 10,   step: 0.5,    def: 4 },
+  { key: 'closeRadius',       label: 'closeRadius',    min: 0,  max: 6,    step: 1,      def: 1 },
+  { key: 'minRegionFraction', label: 'minRegionFrac',  min: 0,  max: 0.02, step: 0.0005, def: 0.002 },
+];
+
+let panelStatusEl = null;
+
+function createRegionDebugPanel() {
+  if (document.getElementById('region-debug-panel')) return;
+  const panel = document.createElement('div');
+  panel.id = 'region-debug-panel';
+  panel.style.cssText = `
+    position: fixed; top: 8px; right: 8px; z-index: 100;
+    background: rgba(20, 12, 6, 0.92); color: rgba(255, 230, 170, 0.95);
+    padding: 10px 12px; border-radius: 8px;
+    font: 11px ui-monospace, monospace;
+    pointer-events: auto; user-select: none;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.6);
+    min-width: 220px;
+  `;
+
+  const title = document.createElement('div');
+  title.textContent = 'region tuning';
+  title.style.cssText = 'font-weight:600;margin-bottom:6px;opacity:0.7;';
+  panel.appendChild(title);
+
+  for (const c of PANEL_CONTROLS) {
+    const initial = (regionOpts[c.key] ?? regionTuneFromUrl()[c.key]) ?? c.def;
+    regionOpts[c.key] = initial;
+
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin:4px 0;';
+
+    const name = document.createElement('span');
+    name.textContent = c.label;
+    name.style.cssText = 'flex:0 0 110px;';
+    row.appendChild(name);
+
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = c.min; input.max = c.max; input.step = c.step;
+    input.value = initial;
+    input.style.cssText = 'flex:1;min-width:60px;';
+    row.appendChild(input);
+
+    const val = document.createElement('span');
+    val.textContent = formatVal(initial, c.step);
+    val.style.cssText = 'flex:0 0 50px;text-align:right;';
+    row.appendChild(val);
+
+    input.addEventListener('input', () => {
+      const v = parseFloat(input.value);
+      val.textContent = formatVal(v, c.step);
+      recomputeRegions({ [c.key]: v });
+    });
+
+    panel.appendChild(row);
+  }
+
+  panelStatusEl = document.createElement('div');
+  panelStatusEl.style.cssText = 'margin-top:6px;opacity:0.75;font-size:10px;line-height:1.4;';
+  panel.appendChild(panelStatusEl);
+
+  document.body.appendChild(panel);
+  updateDebugPanelStatus();
+}
+
+function formatVal(v, step) {
+  // Show appropriate decimal places based on the step size.
+  if (step >= 1)    return String(v);
+  if (step >= 0.1)  return v.toFixed(1);
+  if (step >= 0.01) return v.toFixed(2);
+  return v.toFixed(4);
+}
+
+function updateDebugPanelStatus() {
+  if (!panelStatusEl || !regionsData) return;
+  const { gridW, gridH, regions: regs } = regionsData;
+  panelStatusEl.textContent = `${gridW}×${gridH} grid · ${regs.length} regions`;
 }
 
 // ── Debug overlay (?debug=1 or 'd' key) ────────────────────────────────

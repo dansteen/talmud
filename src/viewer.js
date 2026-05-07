@@ -384,6 +384,8 @@ const PANEL_CONTROLS = [
 ];
 
 let panelStatusEl = null;
+const overlayDisplay = { boxes: true, colors: true };
+const PANEL_POS_KEY = 'regionDebugPanelPos';
 
 function createRegionDebugPanel() {
   if (document.getElementById('region-debug-panel')) return;
@@ -400,9 +402,17 @@ function createRegionDebugPanel() {
   `;
 
   const title = document.createElement('div');
-  title.textContent = 'region tuning';
-  title.style.cssText = 'font-weight:600;margin-bottom:6px;opacity:0.7;';
+  title.textContent = '⠿ region tuning';
+  title.style.cssText = 'font-weight:600;margin-bottom:6px;opacity:0.7;cursor:move;';
   panel.appendChild(title);
+  enablePanelDrag(panel, title);
+
+  // Overlay visibility toggles. Grouped on one row to keep the panel compact.
+  const toggleRow = document.createElement('div');
+  toggleRow.style.cssText = 'display:flex;gap:12px;margin:2px 0 8px;';
+  toggleRow.appendChild(makeToggle('boxes',  overlayDisplay.boxes,  v => { overlayDisplay.boxes  = v; drawRegionOverlay(); }));
+  toggleRow.appendChild(makeToggle('colors', overlayDisplay.colors, v => { overlayDisplay.colors = v; drawRegionOverlay(); }));
+  panel.appendChild(toggleRow);
 
   for (const c of PANEL_CONTROLS) {
     const initial = (regionOpts[c.key] ?? regionTuneFromUrl()[c.key]) ?? c.def;
@@ -445,6 +455,76 @@ function createRegionDebugPanel() {
   updateDebugPanelStatus();
 }
 
+function makeToggle(label, initial, onChange) {
+  const wrap = document.createElement('label');
+  wrap.style.cssText = 'display:flex;align-items:center;gap:4px;cursor:pointer;';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = initial;
+  cb.style.cssText = 'margin:0;cursor:pointer;';
+  cb.addEventListener('change', () => onChange(cb.checked));
+  wrap.appendChild(cb);
+  const text = document.createElement('span');
+  text.textContent = label;
+  wrap.appendChild(text);
+  return wrap;
+}
+
+function enablePanelDrag(panel, handle) {
+  // Restore last saved position so the panel stays where the user put it.
+  try {
+    const saved = JSON.parse(localStorage.getItem(PANEL_POS_KEY) || 'null');
+    if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+      panel.style.left = saved.left + 'px';
+      panel.style.top  = saved.top  + 'px';
+      panel.style.right = 'auto';
+    }
+  } catch {}
+
+  let dragging = false;
+  let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
+  const onDown = (e) => {
+    const point = e.touches ? e.touches[0] : e;
+    dragging = true;
+    const rect = panel.getBoundingClientRect();
+    // Pin via top/left so the drag math is symmetric regardless of initial anchoring.
+    panel.style.left  = rect.left + 'px';
+    panel.style.top   = rect.top  + 'px';
+    panel.style.right = 'auto';
+    startX = point.clientX;
+    startY = point.clientY;
+    startLeft = rect.left;
+    startTop  = rect.top;
+    e.preventDefault();
+  };
+  const onMove = (e) => {
+    if (!dragging) return;
+    const point = e.touches ? e.touches[0] : e;
+    const left = Math.max(0, Math.min(window.innerWidth  - panel.offsetWidth,  startLeft + (point.clientX - startX)));
+    const top  = Math.max(0, Math.min(window.innerHeight - panel.offsetHeight, startTop  + (point.clientY - startY)));
+    panel.style.left = left + 'px';
+    panel.style.top  = top  + 'px';
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    try {
+      localStorage.setItem(PANEL_POS_KEY, JSON.stringify({
+        left: parseFloat(panel.style.left),
+        top:  parseFloat(panel.style.top),
+      }));
+    } catch {}
+  };
+
+  handle.addEventListener('mousedown',  onDown);
+  window.addEventListener('mousemove',  onMove);
+  window.addEventListener('mouseup',    onUp);
+  handle.addEventListener('touchstart', onDown, { passive: false });
+  window.addEventListener('touchmove',  onMove, { passive: false });
+  window.addEventListener('touchend',   onUp);
+}
+
 function formatVal(v, step) {
   // Show appropriate decimal places based on the step size.
   if (step >= 1)    return String(v);
@@ -484,58 +564,61 @@ function drawRegionOverlay() {
 
   const { labels, grid, gridW, gridH, cellSize, regions: regs } = regionsData;
 
-  // Pixel mask via an offscreen canvas at grid resolution, scaled up via CSS.
-  // image-rendering: pixelated keeps the cell boundaries crisp.
-  const mask = document.createElement('canvas');
-  mask.width = gridW;
-  mask.height = gridH;
-  mask.style.cssText =
-    'position:absolute;inset:0;width:100%;height:100%;' +
-    'image-rendering:pixelated;image-rendering:crisp-edges;' +
-    'pointer-events:none;';
-  const mctx = mask.getContext('2d');
-  const img = mctx.createImageData(gridW, gridH);
-  // Paint only occupied cells with the region's color — visualizes the
-  // *actual text shape*, not the (rectangular) region bounds. The bbox
-  // outline drawn below shows the region's interaction bounds.
-  for (let i = 0; i < gridW * gridH; i++) {
-    const lbl = labels[i];
-    if (lbl === 0) continue;
-    if (grid && !grid[i]) continue;
-    const [r, g, b] = REGION_COLORS[(lbl - 1) % REGION_COLORS.length];
-    const o = i * 4;
-    img.data[o + 0] = r;
-    img.data[o + 1] = g;
-    img.data[o + 2] = b;
-    img.data[o + 3] = 110; // bumped a bit since we paint fewer cells now
+  if (overlayDisplay.colors) {
+    // Pixel mask via an offscreen canvas at grid resolution, scaled up via CSS.
+    // image-rendering: pixelated keeps the cell boundaries crisp.
+    const mask = document.createElement('canvas');
+    mask.width = gridW;
+    mask.height = gridH;
+    mask.style.cssText =
+      'position:absolute;inset:0;width:100%;height:100%;' +
+      'image-rendering:pixelated;image-rendering:crisp-edges;' +
+      'pointer-events:none;';
+    const mctx = mask.getContext('2d');
+    const img = mctx.createImageData(gridW, gridH);
+    // Paint only occupied cells with the region's color — visualizes the
+    // *actual text shape*, not the (rectangular) region bounds. The bbox
+    // outline drawn below shows the region's interaction bounds.
+    for (let i = 0; i < gridW * gridH; i++) {
+      const lbl = labels[i];
+      if (lbl === 0) continue;
+      if (grid && !grid[i]) continue;
+      const [r, g, b] = REGION_COLORS[(lbl - 1) % REGION_COLORS.length];
+      const o = i * 4;
+      img.data[o + 0] = r;
+      img.data[o + 1] = g;
+      img.data[o + 2] = b;
+      img.data[o + 3] = 110;
+    }
+    mctx.putImageData(img, 0, 0);
+    overlay.appendChild(mask);
   }
-  mctx.putImageData(img, 0, 0);
-  overlay.appendChild(mask);
 
-  // Bbox outline + label per region.
-  for (const reg of regs) {
-    const [r, g, b] = REGION_COLORS[(reg.id - 1) % REGION_COLORS.length];
-    const box = document.createElement('div');
-    box.style.cssText =
-      `position:absolute;` +
-      `left:${(reg.bbox.x / pageW * 100)}%;` +
-      `top:${(reg.bbox.y / pageH * 100)}%;` +
-      `width:${(reg.bbox.w / pageW * 100)}%;` +
-      `height:${(reg.bbox.h / pageH * 100)}%;` +
-      `border:2px solid rgba(${r},${g},${b},0.9);` +
-      `box-sizing:border-box;pointer-events:none;`;
-    overlay.appendChild(box);
+  if (overlayDisplay.boxes) {
+    for (const reg of regs) {
+      const [r, g, b] = REGION_COLORS[(reg.id - 1) % REGION_COLORS.length];
+      const box = document.createElement('div');
+      box.style.cssText =
+        `position:absolute;` +
+        `left:${(reg.bbox.x / pageW * 100)}%;` +
+        `top:${(reg.bbox.y / pageH * 100)}%;` +
+        `width:${(reg.bbox.w / pageW * 100)}%;` +
+        `height:${(reg.bbox.h / pageH * 100)}%;` +
+        `border:2px solid rgba(${r},${g},${b},0.9);` +
+        `box-sizing:border-box;pointer-events:none;`;
+      overlay.appendChild(box);
 
-    const label = document.createElement('span');
-    label.style.cssText =
-      `position:absolute;` +
-      `left:${(reg.bbox.x / pageW * 100)}%;` +
-      `top:${(reg.bbox.y / pageH * 100)}%;` +
-      `font:10px/1.2 ui-monospace,monospace;color:white;` +
-      `background:rgba(0,0,0,0.75);padding:1px 4px;white-space:nowrap;` +
-      `pointer-events:none;`;
-    label.textContent = `#${reg.id} fs${reg.fontSize.toFixed(1)} n${reg.itemCount}`;
-    overlay.appendChild(label);
+      const label = document.createElement('span');
+      label.style.cssText =
+        `position:absolute;` +
+        `left:${(reg.bbox.x / pageW * 100)}%;` +
+        `top:${(reg.bbox.y / pageH * 100)}%;` +
+        `font:10px/1.2 ui-monospace,monospace;color:white;` +
+        `background:rgba(0,0,0,0.75);padding:1px 4px;white-space:nowrap;` +
+        `pointer-events:none;`;
+      label.textContent = `#${reg.id} fs${reg.fontSize.toFixed(1)} n${reg.itemCount}`;
+      overlay.appendChild(label);
+    }
   }
 }
 

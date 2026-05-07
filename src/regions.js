@@ -99,18 +99,18 @@ function xyCut(grid, gridW, region, depth, density, minThickness) {
     return [region];
   }
 
-  // Pick the axis with more cuts. Ties go to horizontal (matches Vilna's
-  // top-down reading order — header / body / footer is usually the
-  // strongest division).
+  // Vilna pages are fundamentally columnar — the inter-column gaps
+  // (Rashi / Gemara / Tosfos) are the strongest division on the page.
+  // Always prefer vertical splits when any are present; horizontal
+  // splits (header bands, paragraph breaks within a column) are
+  // secondary and get applied at the next recursion level.
   let axis, channels;
-  if (hChannels.length === 0) {
+  if (vChannels.length > 0) {
     axis = 'vertical';   channels = vChannels;
-  } else if (vChannels.length === 0) {
-    axis = 'horizontal'; channels = hChannels;
-  } else if (hChannels.length >= vChannels.length) {
+  } else if (hChannels.length > 0) {
     axis = 'horizontal'; channels = hChannels;
   } else {
-    axis = 'vertical';   channels = vChannels;
+    return [region];
   }
 
   const subs = stripsFromChannels(region, axis, channels);

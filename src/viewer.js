@@ -31,6 +31,8 @@ function regionTuneFromUrl() {
   const cs  = num('cellSize');         if (cs  !== null) opts.cellSize = cs;
   const crx = num('closeRadiusX');     if (crx !== null) opts.closeRadiusX = crx;
   const cry = num('closeRadiusY');     if (cry !== null) opts.closeRadiusY = cry;
+  const crys = num('closeRadiusYSide');if (crys!== null) opts.closeRadiusYSide = crys;
+  const szf = num('sideZoneFraction'); if (szf !== null) opts.sideZoneFraction = szf;
   const mir = num('maxIsolatedRun');   if (mir !== null) opts.maxIsolatedRun = mir;
   const mig = num('minIsolationGap');  if (mig !== null) opts.minIsolationGap = mig;
   const meb = num('minEmptyBelow');    if (meb !== null) opts.minEmptyBelow = meb;
@@ -378,6 +380,8 @@ const PANEL_CONTROLS = [
   { key: 'cellSize',          label: 'cellSize (pt)',     min: 1, max: 10,   step: 0.5,    def: 2 },
   { key: 'closeRadiusX',      label: 'closeRadiusX',      min: 0, max: 10,   step: 1,      def: 0 },
   { key: 'closeRadiusY',      label: 'closeRadiusY',      min: 0, max: 20,   step: 1,      def: 0 },
+  { key: 'closeRadiusYSide',  label: 'closeRadiusYSide',  min: 0, max: 30,   step: 1,      def: 0 },
+  { key: 'sideZoneFraction',  label: 'sideZoneFraction',  min: 0, max: 0.4,  step: 0.01,   def: 0.15 },
   { key: 'maxIsolatedRun',    label: 'maxIsolatedRun',    min: 0, max: 100,  step: 1,      def: 25 },
   { key: 'minIsolationGap',   label: 'minIsolationGap',   min: 0, max: 50,   step: 1,      def: 10 },
   { key: 'minEmptyBelow',     label: 'minEmptyBelow',     min: 0, max: 30,   step: 1,      def: 0 },

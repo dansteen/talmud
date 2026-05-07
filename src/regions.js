@@ -25,19 +25,23 @@
 //     gridW, gridH, cellSize
 //   }
 
-const DEFAULT_CELL_SIZE_PT        = 2;     // PDF points per grid cell
-const DEFAULT_CLOSE_RADIUS_X      = 0;     // cells: horizontal closing radius
-const DEFAULT_CLOSE_RADIUS_Y      = 0;     // cells: vertical closing radius
-const DEFAULT_MIN_REGION_FRAC     = 0.0005; // drop components < this fraction of grid area
-const DEFAULT_MAX_ISOLATED_RUN    = 25;    // cells: max run length to count as catchword
-const DEFAULT_MIN_ISOLATION_GAP   = 10;    // cells: min whitespace on each side
-const DEFAULT_MIN_EMPTY_BELOW     = 0;     // cells: min empty rows directly below the run
-const DEFAULT_HEADER_SPLIT_RATIO  = 1.4;   // ≤1 disables; otherwise items at ≥ratio×region-median are headers
+const DEFAULT_CELL_SIZE_PT         = 2;     // PDF points per grid cell
+const DEFAULT_CLOSE_RADIUS_X       = 0;     // cells: horizontal closing radius
+const DEFAULT_CLOSE_RADIUS_Y       = 0;     // cells: vertical closing radius (inner: G/R/T)
+const DEFAULT_CLOSE_RADIUS_Y_SIDE  = null;  // cells: vertical closing radius for side bands; null = same as Y
+const DEFAULT_SIDE_ZONE_FRACTION   = 0.15;  // fraction of page width (each side) treated as "side zone"
+const DEFAULT_MIN_REGION_FRAC      = 0.0005; // drop components < this fraction of grid area
+const DEFAULT_MAX_ISOLATED_RUN     = 25;    // cells: max run length to count as catchword
+const DEFAULT_MIN_ISOLATION_GAP    = 10;    // cells: min whitespace on each side
+const DEFAULT_MIN_EMPTY_BELOW      = 0;     // cells: min empty rows directly below the run
+const DEFAULT_HEADER_SPLIT_RATIO   = 1.4;   // ≤1 disables; otherwise items at ≥ratio×region-median are headers
 
 export function detectRegions(items, pageW, pageH, opts = {}) {
   const cellSize          = opts.cellSize          ?? DEFAULT_CELL_SIZE_PT;
   const closeRadiusX      = Math.round(opts.closeRadiusX ?? DEFAULT_CLOSE_RADIUS_X);
   const closeRadiusY      = Math.round(opts.closeRadiusY ?? DEFAULT_CLOSE_RADIUS_Y);
+  const closeRadiusYSide  = Math.round(opts.closeRadiusYSide ?? DEFAULT_CLOSE_RADIUS_Y_SIDE ?? closeRadiusY);
+  const sideZoneFraction  = opts.sideZoneFraction  ?? DEFAULT_SIDE_ZONE_FRACTION;
   const minRegionFraction = opts.minRegionFraction ?? DEFAULT_MIN_REGION_FRAC;
   const maxIsolatedRun    = opts.maxIsolatedRun    ?? DEFAULT_MAX_ISOLATED_RUN;
   const minIsolationGap   = opts.minIsolationGap   ?? DEFAULT_MIN_ISOLATION_GAP;
@@ -59,11 +63,19 @@ export function detectRegions(items, pageW, pageH, opts = {}) {
 
   // Closing with a separable rectangular kernel. closeRadiusY > closeRadiusX
   // bridges inter-line gaps within a column without bridging the wider
-  // whitespace between columns.
+  // whitespace between columns. The Y radius can vary by column position:
+  // the side meforshim columns sit in the leftmost/rightmost
+  // sideZoneFraction of the page and use closeRadiusYSide instead, since
+  // their tiny text often sits at much wider line spacing than G/R/T.
   let workGrid = rawGrid;
-  if (closeRadiusX > 0 || closeRadiusY > 0) {
-    workGrid = dilateRect(rawGrid, gridW, gridH, closeRadiusX, closeRadiusY);
-    workGrid = erodeRect (workGrid, gridW, gridH, closeRadiusX, closeRadiusY);
+  const edgeBand = Math.round(sideZoneFraction * gridW);
+  const ryAt = (closeRadiusYSide === closeRadiusY)
+    ? closeRadiusY
+    : (x) => (x < edgeBand || x >= gridW - edgeBand) ? closeRadiusYSide : closeRadiusY;
+  const anyY = closeRadiusY > 0 || closeRadiusYSide > 0;
+  if (closeRadiusX > 0 || anyY) {
+    workGrid = dilateRect(rawGrid, gridW, gridH, closeRadiusX, ryAt);
+    workGrid = erodeRect (workGrid, gridW, gridH, closeRadiusX, ryAt);
   }
 
   const { labels, count } = connectedComponents(workGrid, gridW, gridH);
@@ -172,7 +184,11 @@ function demoteIsolatedRuns(grid, gridW, gridH, maxRunLen, minGap, minEmptyBelow
 // are ignored), which slightly under-erodes near the page edge but text in
 // our PDFs sits well inside the margins.
 
+// `ry` may be a number (constant for every column) or a function
+// `(x) => number` returning a per-column Y radius. Per-column lets the
+// page's edge bands use a different vertical reach than the inner area.
 function dilateRect(grid, gridW, gridH, rx, ry) {
+  const ryAt = typeof ry === 'function' ? ry : () => ry;
   let src = grid;
   if (rx > 0) {
     const out = new Uint8Array(gridW * gridH);
@@ -188,23 +204,29 @@ function dilateRect(grid, gridW, gridH, rx, ry) {
     }
     src = out;
   }
-  if (ry > 0) {
-    const out = new Uint8Array(gridW * gridH);
-    for (let x = 0; x < gridW; x++) {
-      for (let y = 0; y < gridH; y++) {
-        const y0 = Math.max(0, y - ry);
-        const y1 = Math.min(gridH - 1, y + ry);
-        for (let ny = y0; ny <= y1; ny++) {
-          if (src[ny * gridW + x]) { out[y * gridW + x] = 1; break; }
-        }
+  let didY = false;
+  const out = new Uint8Array(gridW * gridH);
+  for (let x = 0; x < gridW; x++) {
+    const r = ryAt(x);
+    if (r <= 0) {
+      for (let y = 0; y < gridH; y++) out[y * gridW + x] = src[y * gridW + x];
+      continue;
+    }
+    didY = true;
+    for (let y = 0; y < gridH; y++) {
+      const y0 = Math.max(0, y - r);
+      const y1 = Math.min(gridH - 1, y + r);
+      for (let ny = y0; ny <= y1; ny++) {
+        if (src[ny * gridW + x]) { out[y * gridW + x] = 1; break; }
       }
     }
-    src = out;
   }
+  if (didY) return out;
   return src === grid ? new Uint8Array(grid) : src;
 }
 
 function erodeRect(grid, gridW, gridH, rx, ry) {
+  const ryAt = typeof ry === 'function' ? ry : () => ry;
   let src = grid;
   if (rx > 0) {
     const out = new Uint8Array(gridW * gridH);
@@ -222,21 +244,26 @@ function erodeRect(grid, gridW, gridH, rx, ry) {
     }
     src = out;
   }
-  if (ry > 0) {
-    const out = new Uint8Array(gridW * gridH);
-    for (let x = 0; x < gridW; x++) {
-      for (let y = 0; y < gridH; y++) {
-        const y0 = Math.max(0, y - ry);
-        const y1 = Math.min(gridH - 1, y + ry);
-        let allOn = 1;
-        for (let ny = y0; ny <= y1; ny++) {
-          if (!src[ny * gridW + x]) { allOn = 0; break; }
-        }
-        out[y * gridW + x] = allOn;
-      }
+  let didY = false;
+  const out = new Uint8Array(gridW * gridH);
+  for (let x = 0; x < gridW; x++) {
+    const r = ryAt(x);
+    if (r <= 0) {
+      for (let y = 0; y < gridH; y++) out[y * gridW + x] = src[y * gridW + x];
+      continue;
     }
-    src = out;
+    didY = true;
+    for (let y = 0; y < gridH; y++) {
+      const y0 = Math.max(0, y - r);
+      const y1 = Math.min(gridH - 1, y + r);
+      let allOn = 1;
+      for (let ny = y0; ny <= y1; ny++) {
+        if (!src[ny * gridW + x]) { allOn = 0; break; }
+      }
+      out[y * gridW + x] = allOn;
+    }
   }
+  if (didY) return out;
   return src === grid ? new Uint8Array(grid) : src;
 }
 

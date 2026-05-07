@@ -375,7 +375,7 @@ const PANEL_CONTROLS = [
   { key: 'cellSize',          label: 'cellSize (pt)',     min: 1,  max: 10,   step: 0.5,    def: 4 },
   { key: 'closeRadius',       label: 'closeRadius',       min: 0,  max: 6,    step: 1,      def: 1 },
   { key: 'noiseMinCells',     label: 'noiseMinCells',     min: 0,  max: 50,   step: 1,      def: 5 },
-  { key: 'singleLineMaxX',    label: 'singleLine maxX pt', min: 0,  max: 200,  step: 5,      def: 60 },
+  { key: 'singleLineMaxX',    label: 'singleLine maxX pt', min: 0,  max: 200,  step: 5,      def: 0 },
   { key: 'minRegionFraction', label: 'minRegionFrac',     min: 0,  max: 0.02, step: 0.0005, def: 0.002 },
 ];
 

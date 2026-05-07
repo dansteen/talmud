@@ -25,7 +25,7 @@ const DEFAULT_CELL_SIZE_PT = 4;        // PDF points per grid cell
 const DEFAULT_CLOSE_RADIUS = 1;        // cells; bridges ≤ 2*r*cellSize PDF pt
 const DEFAULT_MIN_REGION_FRAC = 0.002; // drop components < 0.2% of grid area
 const DEFAULT_NOISE_MIN_CELLS = 5;     // drop raw-grid components < this many cells
-const DEFAULT_SINGLE_LINE_MAX_X = 60;  // PDF pt; 0 disables the filter
+const DEFAULT_SINGLE_LINE_MAX_X = 0;   // PDF pt; disabled — see notes below
 
 // Bridging math: a closing of radius `r` cells fills any whitespace channel
 // up to `2*r` cells wide. With cellSize=4 and r=1 that's 8 PDF pt — wide
@@ -39,9 +39,11 @@ const DEFAULT_SINGLE_LINE_MAX_X = 60;  // PDF pt; 0 disables the filter
 //
 // `singleLineMaxX` (PDF pt) drops items that are alone on their y-line: no
 // other item shares their y-band within this many points horizontally.
-// Catches the catchword (the next-page word printed alone at the bottom of
-// each Gemara/Rashi/Tosfos column), which would otherwise sit isolated
-// between two real regions and bridge them.
+// Default 0 (disabled) — the motivating case (catchword between a shorter
+// column's main text and a longer column's wrap-around) puts the catchword
+// next to wrap-around items at the same y, so the filter doesn't catch it
+// AND it accidentally chops legitimate line-end items elsewhere. Kept as
+// an option for experimentation.
 
 export function detectRegions(items, pageW, pageH, opts = {}) {
   const cellSize        = opts.cellSize          ?? DEFAULT_CELL_SIZE_PT;

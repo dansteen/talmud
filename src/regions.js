@@ -30,6 +30,7 @@ const DEFAULT_MIN_REGION_FRAC     = 0.0005; // drop components < this fraction o
 const DEFAULT_MAX_ISOLATED_RUN    = 25;    // cells: max run length to count as catchword
 const DEFAULT_MIN_ISOLATION_GAP   = 10;    // cells: min whitespace on each side
 const DEFAULT_MIN_EMPTY_BELOW     = 0;     // cells: min empty rows directly below the run
+const DEFAULT_HEADER_SPLIT_RATIO  = 1.4;   // ≤1 disables; otherwise items at ≥ratio×region-median are headers
 
 export function detectRegions(items, pageW, pageH, opts = {}) {
   const cellSize          = opts.cellSize          ?? DEFAULT_CELL_SIZE_PT;
@@ -38,6 +39,7 @@ export function detectRegions(items, pageW, pageH, opts = {}) {
   const maxIsolatedRun    = opts.maxIsolatedRun    ?? DEFAULT_MAX_ISOLATED_RUN;
   const minIsolationGap   = opts.minIsolationGap   ?? DEFAULT_MIN_ISOLATION_GAP;
   const minEmptyBelow     = opts.minEmptyBelow     ?? DEFAULT_MIN_EMPTY_BELOW;
+  const headerSplitRatio  = opts.headerSplitRatio  ?? DEFAULT_HEADER_SPLIT_RATIO;
 
   const gridW = Math.max(1, Math.ceil(pageW / cellSize));
   const gridH = Math.max(1, Math.ceil(pageH / cellSize));
@@ -66,6 +68,14 @@ export function detectRegions(items, pageW, pageH, opts = {}) {
 
   const minCells = Math.max(8, Math.round(minRegionFraction * gridW * gridH));
   regions = filterAndRelabel(regions, labels, minCells);
+
+  // Post-pass: split regions that contain ≥2 outsized headers (much larger
+  // font than the region's median). Targets the side meforshim columns,
+  // where each meforesh starts with a name in big type.
+  if (headerSplitRatio > 1) {
+    regions = splitRegionsByHeaders(regions, labels, gridW, gridH, cellSize, items, headerSplitRatio);
+    regions = filterAndRelabel(regions, labels, 0);
+  }
 
   // Visualization paints `rawGrid` cells (so the colored fill follows the
   // actual text shape, not the dilated mask).
@@ -343,4 +353,70 @@ function filterAndRelabel(regions, labels, minCells) {
     if (old !== 0) labels[i] = remap.get(old) ?? 0;
   }
   return surviving;
+}
+
+// ── Header-split post-pass ──
+//
+// Side-meforshim columns are detected as a single tall region by CC, but they
+// internally consist of N independent commentaries each introduced by a
+// large-font header (the מפרש's name). We split such regions horizontally
+// at each header.
+//
+// A region is split iff it contains ≥2 items whose fontSize is ≥ ratio ×
+// the region's own median fontSize. Single oversized items (e.g. an
+// ornamental initial) are ignored. The first header marks the existing
+// region; each subsequent header starts a new sub-region whose top is the
+// header's top edge.
+
+function splitRegionsByHeaders(regions, labels, gridW, gridH, cellSize, items, ratio) {
+  const byRegion = new Map();
+  for (const it of items) {
+    const cx = Math.floor((it.x + it.w / 2) / cellSize);
+    const cy = Math.floor((it.y + it.h / 2) / cellSize);
+    if (cx < 0 || cy < 0 || cx >= gridW || cy >= gridH) continue;
+    const lbl = labels[cy * gridW + cx];
+    if (lbl === 0) continue;
+    let arr = byRegion.get(lbl);
+    if (!arr) { arr = []; byRegion.set(lbl, arr); }
+    arr.push(it);
+  }
+
+  let nextId = regions.reduce((m, r) => Math.max(m, r.id), 0) + 1;
+  const splitMap = new Map();   // oldId → { ys: number[], ids: number[] }
+
+  for (const r of regions) {
+    const its = byRegion.get(r.id);
+    if (!its || its.length < 2 || !r.fontSize) continue;
+    const threshold = ratio * r.fontSize;
+    const big = its.filter(it => it.fontSize >= threshold);
+    if (big.length < 2) continue;
+    big.sort((a, b) => a.y - b.y);
+    // Section 0 = region top through just before the second header.
+    // Each subsequent header starts a new section at its top row. Snap to
+    // cell rows so a header glyph lands cleanly in its own section rather
+    // than straddling the boundary.
+    const rows = big.slice(1).map(it => Math.floor(it.y / cellSize));
+    const ids = [r.id];
+    for (let i = 0; i < rows.length; i++) ids.push(nextId++);
+    splitMap.set(r.id, { rows, ids });
+  }
+
+  if (splitMap.size === 0) return regions;
+
+  for (let y = 0; y < gridH; y++) {
+    const row = y * gridW;
+    for (let x = 0; x < gridW; x++) {
+      const lbl = labels[row + x];
+      if (lbl === 0) continue;
+      const split = splitMap.get(lbl);
+      if (!split) continue;
+      let section = 0;
+      for (let i = 0; i < split.rows.length; i++) {
+        if (y >= split.rows[i]) section = i + 1;
+      }
+      labels[row + x] = split.ids[section];
+    }
+  }
+
+  return computeRegionStats(labels, gridW, gridH, cellSize, items, nextId - 1);
 }

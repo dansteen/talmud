@@ -24,19 +24,31 @@
 //     gridW, gridH, cellSize
 //   }
 
-const DEFAULT_CELL_SIZE_PT       = 2;     // PDF points per grid cell
-const DEFAULT_CLOSE_RADIUS       = 1;     // cells; bridges ≤ 2*r*cellSize PDF pt
-const DEFAULT_MIN_REGION_FRAC    = 0.002; // drop components < 0.2% of grid area
+const DEFAULT_CELL_SIZE_PT        = 2;     // PDF points per grid cell
+const DEFAULT_CLOSE_RADIUS        = 1;     // cells; bridges ≤ 2*r*cellSize PDF pt
+const DEFAULT_MIN_REGION_FRAC     = 0.002; // drop components < 0.2% of grid area
+const DEFAULT_MAX_ISOLATED_RUN    = 25;    // cells: max run length to count as catchword
+const DEFAULT_MIN_ISOLATION_GAP   = 10;    // cells: min whitespace on each side
 
 export function detectRegions(items, pageW, pageH, opts = {}) {
   const cellSize          = opts.cellSize          ?? DEFAULT_CELL_SIZE_PT;
   const closeRadius       = opts.closeRadius       ?? DEFAULT_CLOSE_RADIUS;
   const minRegionFraction = opts.minRegionFraction ?? DEFAULT_MIN_REGION_FRAC;
+  const maxIsolatedRun    = opts.maxIsolatedRun    ?? DEFAULT_MAX_ISOLATED_RUN;
+  const minIsolationGap   = opts.minIsolationGap   ?? DEFAULT_MIN_ISOLATION_GAP;
 
   const gridW = Math.max(1, Math.ceil(pageW / cellSize));
   const gridH = Math.max(1, Math.ceil(pageH / cellSize));
 
-  const rawGrid = buildOccupancyGrid(items, gridW, gridH, cellSize);
+  let rawGrid = buildOccupancyGrid(items, gridW, gridH, cellSize);
+
+  // Pre-pass: if a short run of occupied cells in a row has substantial
+  // whitespace on both sides, it's almost certainly a catchword (the
+  // next-page word printed alone at the bottom of a column). Demote those
+  // cells to whitespace before they can bridge real regions during closing.
+  if (maxIsolatedRun > 0 && minIsolationGap > 0) {
+    rawGrid = demoteIsolatedRuns(rawGrid, gridW, gridH, maxIsolatedRun, minIsolationGap);
+  }
 
   // Closing bridges intra-region gaps without reaching across the wider
   // inter-region whitespace. The result is what we connected-components on.
@@ -72,6 +84,49 @@ function buildOccupancyGrid(items, gridW, gridH, cellSize) {
     }
   }
   return grid;
+}
+
+// ── Pre-pass: demote isolated short runs (catchword filter) ──
+//
+// For every row, find runs of occupied cells. A run that's short
+// (≤ maxRunLen cells) AND surrounded by whitespace of at least `minGap`
+// cells on both sides is almost certainly a catchword sitting alone on
+// its line — demote it to whitespace so it can't act as a bridge between
+// real regions during the closing pass.
+//
+// "Whitespace on both sides" matches the user's description of what
+// catchwords look like: a single short word with the rest of the row
+// empty around it. Normal in-line words have neighbouring text within
+// a couple of cells, so they don't trigger this filter.
+
+function demoteIsolatedRuns(grid, gridW, gridH, maxRunLen, minGap) {
+  const out = new Uint8Array(grid);
+  for (let y = 0; y < gridH; y++) {
+    const rowBase = y * gridW;
+    // Find runs of occupied cells in this row.
+    const runs = [];
+    let i = 0;
+    while (i < gridW) {
+      if (grid[rowBase + i]) {
+        const start = i;
+        while (i < gridW && grid[rowBase + i]) i++;
+        runs.push({ start, end: i }); // half-open: [start, end)
+      } else {
+        i++;
+      }
+    }
+    // Demote any short run with substantial gap on both sides.
+    for (let j = 0; j < runs.length; j++) {
+      const r = runs[j];
+      if (r.end - r.start > maxRunLen) continue;
+      const leftGap  = j > 0                  ? r.start - runs[j - 1].end : r.start;
+      const rightGap = j < runs.length - 1    ? runs[j + 1].start - r.end : gridW - r.end;
+      if (leftGap >= minGap && rightGap >= minGap) {
+        for (let x = r.start; x < r.end; x++) out[rowBase + x] = 0;
+      }
+    }
+  }
+  return out;
 }
 
 // ── Morphological dilation / erosion (separable, square kernel) ──

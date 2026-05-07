@@ -28,9 +28,11 @@ function regionTuneFromUrl() {
     const v = parseFloat(p.get(key));
     return Number.isFinite(v) ? v : null;
   };
-  const cs = num('cellSize');     if (cs !== null) opts.cellSize = cs;
-  const cr = num('closeRadius');  if (cr !== null) opts.closeRadius = cr;
-  const mf = num('minRegionFrac');if (mf !== null) opts.minRegionFraction = mf;
+  const cs  = num('cellSize');         if (cs  !== null) opts.cellSize = cs;
+  const cr  = num('closeRadius');      if (cr  !== null) opts.closeRadius = cr;
+  const mir = num('maxIsolatedRun');   if (mir !== null) opts.maxIsolatedRun = mir;
+  const mig = num('minIsolationGap');  if (mig !== null) opts.minIsolationGap = mig;
+  const mf  = num('minRegionFrac');    if (mf  !== null) opts.minRegionFraction = mf;
   return opts;
 }
 
@@ -370,9 +372,11 @@ function recomputeRegions(opts) {
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'cellSize',          label: 'cellSize (pt)', min: 1, max: 10,   step: 0.5,    def: 2 },
-  { key: 'closeRadius',       label: 'closeRadius',   min: 0, max: 6,    step: 1,      def: 1 },
-  { key: 'minRegionFraction', label: 'minRegionFrac', min: 0, max: 0.02, step: 0.0005, def: 0.002 },
+  { key: 'cellSize',          label: 'cellSize (pt)',     min: 1, max: 10,   step: 0.5,    def: 2 },
+  { key: 'closeRadius',       label: 'closeRadius',       min: 0, max: 6,    step: 1,      def: 1 },
+  { key: 'maxIsolatedRun',    label: 'maxIsolatedRun',    min: 0, max: 100,  step: 1,      def: 25 },
+  { key: 'minIsolationGap',   label: 'minIsolationGap',   min: 0, max: 50,   step: 1,      def: 10 },
+  { key: 'minRegionFraction', label: 'minRegionFrac',     min: 0, max: 0.02, step: 0.0005, def: 0.002 },
 ];
 
 let panelStatusEl = null;

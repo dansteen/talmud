@@ -67,13 +67,19 @@ let detectionItems = [];
 // Hit-testing keeps the full textItems list, so a tap on filtered text
 // still finds something (or falls through to the no-region path naturally).
 function filterDetectionItems(items) {
-  // Threshold tuned against megillah:2:a, where "real" column lines top out
-  // around 30% of page width and column-bridging items run 40-60%. A 35%
-  // cutoff cleanly separates them.
-  const wideMax = pageW * 0.35;
-  return items.filter(it =>
-    it.str && it.str.trim() && it.w <= wideMax
-  );
+  return items.filter(it => {
+    if (!it.str || !it.str.trim()) return false;
+    const xL = it.x / pageW;
+    const xR = (it.x + it.w) / pageW;
+    // Cross-column bridge: starts before the inner-meforshim (rashi) column
+    // and extends past the inter-column gap. Legit gemara lines top out
+    // around xR ≈ 47%; legit rashi starts at xL ≈ 49%. Items that cross
+    // both sides of the ~48% boundary are PDF bridges (a single wide item
+    // whose internal letter-spacing produces the visual column break) and
+    // they fuse columns into one connected component.
+    if (xL < 0.45 && xR > 0.50) return false;
+    return true;
+  });
 }
 
 // Region detection result: { regions, labels, gridW, gridH, cellSize } or null

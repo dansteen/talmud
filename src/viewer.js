@@ -51,100 +51,8 @@ let renderScale = 1; // scale at which the canvas was last rendered
 let textBbox = null;
 
 // Per-item rectangles + font size in viewport-coordinate units (y top-down).
-// `textItems` is the full set used for hit-testing (findItemAtPoint, etc).
-// `detectionItems` is fed to detectRegions: we drop whitespace-only items
-// and split items that cross detected inter-column gaps, so wide PDF
-// text items don't fuse separate columns into one connected component.
+// Fed to detectRegions() each time we re-tune detection knobs.
 let textItems = [];
-let detectionItems = [];
-
-function filterDetectionItems(items) {
-  const real = items.filter(it => it.str && it.str.trim());
-  const gaps = detectInterColumnGaps(real);
-  return gaps.length ? splitItemsAtGaps(real, gaps) : real;
-}
-
-// Find inter-column gaps from the page's own item-coverage distribution.
-// A real Talmud daf has tall narrow columns with mostly-empty whitespace
-// strips between them; binning item coverage across x and looking for
-// runs of low-density buckets surfaces those strips. Returns a list of
-// gap x-positions in PDF units.
-//
-// This is data-driven (per-page), so it adapts to whatever column layout
-// the publisher actually used — no hardcoded geometry. Pages with no
-// clear gaps (single-column, very sparse, etc.) return [] and the rest
-// of the pipeline runs as before.
-function detectInterColumnGaps(items) {
-  const N = 100;                        // 100 buckets across page width (~1% resolution)
-  const cover = new Array(N).fill(0);
-  for (const it of items) {
-    const xL = Math.max(0, Math.floor(it.x / pageW * N));
-    const xR = Math.min(N, Math.ceil((it.x + it.w) / pageW * N));
-    for (let i = xL; i < xR; i++) cover[i]++;
-  }
-
-  // Bail if there isn't enough text on the page to draw a confident
-  // distribution from — e.g. a near-empty PDF.
-  const maxCov = Math.max(...cover);
-  if (maxCov < 30) return [];
-
-  // A gap is a bucket whose coverage is well below the typical column
-  // density. We use a fraction of the median of non-empty buckets, with a
-  // floor so a few stray bridging items can't drag the threshold up.
-  const nonZero = cover.filter(c => c > 0).sort((a, b) => a - b);
-  const median = nonZero[nonZero.length >> 1];
-  const threshold = Math.max(20, median * 0.35);
-
-  // Skip the leading/trailing zero margins of the page when scanning for
-  // internal gaps — those are page-edge whitespace, not column gaps.
-  let firstNz = 0;
-  while (firstNz < N && cover[firstNz] === 0) firstNz++;
-  let lastNz = N - 1;
-  while (lastNz >= 0 && cover[lastNz] === 0) lastNz--;
-
-  const gaps = [];
-  let i = firstNz + 1;
-  while (i < lastNz) {
-    if (cover[i] < threshold) {
-      const runStart = i;
-      while (i <= lastNz && cover[i] < threshold) i++;
-      const runEnd = i;
-      // Use the middle of the gap run as the split x.
-      gaps.push((runStart + runEnd) / 2 / N * pageW);
-    } else {
-      i++;
-    }
-  }
-  return gaps;
-}
-
-// Split items whose bbox crosses any detected gap. Each crossing produces
-// a left and right segment with a small PDF-unit margin between them so
-// the resulting cells aren't adjacent on the occupancy grid.
-function splitItemsAtGaps(items, gaps) {
-  const margin = 1;
-  const out = [];
-  for (const it of items) {
-    let segs = [{ x: it.x, w: it.w }];
-    for (const gap of gaps) {
-      const next = [];
-      for (const s of segs) {
-        if (s.x < gap && s.x + s.w > gap) {
-          const lw = gap - s.x - margin;
-          const rx = gap + margin;
-          const rw = (s.x + s.w) - rx;
-          if (lw > 1) next.push({ x: s.x, w: lw });
-          if (rw > 1) next.push({ x: rx, w: rw });
-        } else {
-          next.push(s);
-        }
-      }
-      segs = next;
-    }
-    for (const s of segs) out.push({ ...it, x: s.x, w: s.w });
-  }
-  return out;
-}
 
 // Region detection result: { regions, labels, gridW, gridH, cellSize } or null
 // before any page has loaded. The labeled grid drives O(1) hit-testing.
@@ -433,7 +341,6 @@ export async function loadPage(url, savedViewState = null) {
   textItems = data.items;
   textBbox = data.textBbox;
   pageIsPerekEnd = data.perekEnd;
-  detectionItems = filterDetectionItems(textItems);
 
   // Detect regions from the per-item rects: low-res occupancy grid,
   // morphological closing, connected components. The auto-tuner sweeps a
@@ -472,7 +379,7 @@ function recomputeRegions(opts) {
     drawRegionOverlay();
     return;
   }
-  regionsData = detectRegions(detectionItems, pageW, pageH, regionOpts);
+  regionsData = detectRegions(textItems, pageW, pageH, regionOpts);
   regions = regionsData.regions;
   // Manual tuning via slider — the auto-tune diagnostics from page-load are
   // now stale, but we leave them in place so the user can still see what was
@@ -567,7 +474,7 @@ function autoTuneAndApply(baseOpts) {
     const adj = TUNING_ATTEMPTS[i];
     const opts = adj === null ? { ...regionOpts, ...baseOpts }
                               : { ...regionOpts, ...baseOpts, ...adj };
-    const data = detectRegions(detectionItems, pageW, pageH, opts);
+    const data = detectRegions(textItems, pageW, pageH, opts);
     const sig = countSignificantRegions(data.regions);
     const overmerged = isOvermerged(data.regions);
     tries.push({ opts, data, sig, overmerged, idx: i });

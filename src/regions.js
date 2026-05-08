@@ -25,11 +25,11 @@
 //     gridW, gridH, cellSize
 //   }
 
-const DEFAULT_CELL_SIZE_PT         = 1;     // PDF points per grid cell
+const DEFAULT_CELL_SIZE_PT         = 1.5;   // PDF points per grid cell
 const DEFAULT_CLOSE_RADIUS_X       = 0;     // cells: horizontal closing radius
 const DEFAULT_CLOSE_RADIUS_Y       = 0;     // cells: vertical closing radius (inner: G/R/T)
 const DEFAULT_CLOSE_RADIUS_Y_SIDE  = 5;     // cells: vertical closing radius for side bands
-const DEFAULT_SIDE_ZONE_FRACTION   = 0.15;  // fraction of page width (each side) treated as "side zone"
+const DEFAULT_SIDE_ZONE_FRACTION   = 0.13;  // fraction of page width (each side) treated as "side zone"
 const DEFAULT_MIN_REGION_FRAC      = 0.0005; // drop components < this fraction of grid area
 const DEFAULT_MAX_ISOLATED_RUN     = 25;    // cells: max run length to count as catchword
 const DEFAULT_MIN_ISOLATION_GAP    = 10;    // cells: min whitespace on each side

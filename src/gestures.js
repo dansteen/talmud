@@ -23,7 +23,7 @@ const SCROLL_FRAC = 0.7;
 // Fraction of the viewport (each axis) treated as the "centre" zone for
 // same-region double-tap. A tap whose offset from centre is smaller than
 // this on both axes counts as a centre tap → home.
-const CENTER_DEAD_ZONE = 0.20;
+const CENTER_DEAD_ZONE = 0.10;
 
 // Active touches: identifier → {x, y}
 //
@@ -53,8 +53,10 @@ let lastPinchMidX = 0, lastPinchMidY = 0;
 let didPinch = false;
 
 // The region the user has zoomed into via double-tap or pinch. Drives the
-// "same vs different region" branch in handleDoubleTap. Cleared when the
-// user goes home.
+// "same vs different region" branch in handleDoubleTap and is also the
+// region we apply directional taps to when the user taps whitespace. Both
+// cleared when the user goes home.
+let currentRegion = null;
 let currentRegionId = null;
 
 let onPrev = null;
@@ -156,6 +158,7 @@ function onTouchEnd(e) {
       const region = findRegionAtPoint(lastPinchMidX, lastPinchMidY);
       if (region && region.fontSize > 0) {
         setRegionZoomPx(region.fontSize, region.fontSize * effectiveScale());
+        currentRegion = region;
         currentRegionId = region.id;
       }
       didPinch = false;
@@ -210,43 +213,52 @@ function handleTap(clientX, clientY) {
 }
 
 function handleDoubleTap(clientX, clientY) {
-  const region = findRegionAtPoint(clientX, clientY);
-  if (!region) {
-    // Tap landed off any region — bail to home if we were zoomed.
-    if (currentRegionId !== null) goHome();
+  const tapped = findRegionAtPoint(clientX, clientY);
+
+  // Tap on the focused region OR on whitespace while focused — both apply
+  // the directional model to the focused column. Whitespace doesn't drop
+  // us back to home; it scrolls/homes based on tap direction relative to
+  // the column we're already in.
+  const focusedTap = tapped
+    ? (tapped.id === currentRegionId)
+    : (currentRegion !== null);
+  if (focusedTap) {
+    handleFocusedTap(currentRegion, clientX, clientY);
     return;
   }
 
-  if (region.id === currentRegionId) {
-    // Same region — direction relative to viewport centre picks scroll
-    // axis. If the column doesn't extend off-screen in that direction,
-    // there's nothing to scroll to, so fall back to home.
-    const w = window.innerWidth, h = window.innerHeight;
-    const dx = clientX - w / 2, dy = clientY - h / 2;
-    const dxN = Math.abs(dx) / w, dyN = Math.abs(dy) / h;
-    if (dxN < CENTER_DEAD_ZONE && dyN < CENTER_DEAD_ZONE) {
-      goHome();
-      return;
-    }
-    const horizontal = dxN > dyN;
-    const direction = horizontal ? (dx < 0 ? 'left' : 'right')
-                                 : (dy < 0 ? 'up'   : 'down');
-    if (regionExtendsBeyondViewport(region, direction)) {
-      scrollFocused(direction);
-    } else {
-      goHome();
-    }
-    return;
-  }
+  // Whitespace tap with nothing focused — no-op.
+  if (!tapped) return;
 
   // Different region — zoom to it at its saved preferred size, centred on
-  // the tap point. Centring on the tap (not the region centre) lets the
-  // user pick which part of the region they want to read.
-  const targetPx = getRegionZoomPx(region.fontSize) ?? DEFAULT_READING_FONT_PX;
-  const target = transformForRegion(region, clientX, clientY, targetPx);
+  // the tap so the user picks which part of the region they're zooming to.
+  const targetPx = getRegionZoomPx(tapped.fontSize) ?? DEFAULT_READING_FONT_PX;
+  const target = transformForRegion(tapped, clientX, clientY, targetPx);
   if (!target) return;
-  currentRegionId = region.id;
+  currentRegion = tapped;
+  currentRegionId = tapped.id;
   animateTo(target.x, target.y, target.scale);
+}
+
+function handleFocusedTap(region, clientX, clientY) {
+  // Direction relative to viewport centre picks scroll axis. If the focused
+  // column doesn't extend off-screen in that direction, there's nothing to
+  // scroll to, so fall back to home.
+  const w = window.innerWidth, h = window.innerHeight;
+  const dx = clientX - w / 2, dy = clientY - h / 2;
+  const dxN = Math.abs(dx) / w, dyN = Math.abs(dy) / h;
+  if (dxN < CENTER_DEAD_ZONE && dyN < CENTER_DEAD_ZONE) {
+    goHome();
+    return;
+  }
+  const horizontal = dxN > dyN;
+  const direction = horizontal ? (dx < 0 ? 'left' : 'right')
+                               : (dy < 0 ? 'up'   : 'down');
+  if (regionExtendsBeyondViewport(region, direction)) {
+    scrollFocused(direction);
+  } else {
+    goHome();
+  }
 }
 
 function scrollFocused(direction) {
@@ -263,6 +275,7 @@ function scrollFocused(direction) {
 }
 
 function goHome() {
+  currentRegion = null;
   currentRegionId = null;
   const { x, y, scale } = transformForHome();
   animateTo(x, y, scale);

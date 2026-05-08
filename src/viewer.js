@@ -656,21 +656,24 @@ export function animateTo(targetX, targetY, targetScale, onDone) {
 }
 
 // Compute a target view transform that:
-//   • centres `region` (bbox in PDF points) in the viewport
+//   • places the tap point (clientX, clientY) at the viewport centre, and
 //   • scales so a glyph of the region's fontSize displays at `targetFontPx`
 //     CSS pixels — same calibration used for setting zoom on pinch end.
-// If the region is bigger than the viewport at that scale, we still honour
-// the saved zoom and let the user see "as much as possible" centred.
-export function transformForRegion(region, targetFontPx) {
-  if (!region || !region.bbox || !(region.fontSize > 0)) return null;
-  if (!(targetFontPx > 0)) return null;
-  const desiredEff = targetFontPx / region.fontSize;     // PDF → screen
-  const visualScale = desiredEff / renderScale;
-  const cx = region.bbox.x + region.bbox.w / 2;
-  const cy = region.bbox.y + region.bbox.h / 2;
+// Centring on the tap (not the region's bbox/centroid) means a tap on the
+// top of a column zooms in on the top, a tap at the bottom on the bottom —
+// works correctly for L-shaped regions and avoids the "tap Rashi → zoom
+// Gemara" trap that bbox-centre creates when a region wraps under another.
+export function transformForRegion(region, clientX, clientY, targetFontPx) {
+  if (!region || !(region.fontSize > 0) || !(targetFontPx > 0)) return null;
+  const visualScale = (targetFontPx / region.fontSize) / renderScale;
+  // Tap → canvas-CSS coords at the *current* view.scale. Same point, taken
+  // through the new scale, must land at the screen centre.
+  const r = canvas.getBoundingClientRect();
+  const localX = (clientX - r.left) / view.scale;
+  const localY = (clientY - r.top)  / view.scale;
   return {
-    x: window.innerWidth  / 2 - cx * desiredEff,
-    y: window.innerHeight / 2 - cy * desiredEff,
+    x: window.innerWidth  / 2 - localX * visualScale,
+    y: window.innerHeight / 2 - localY * visualScale,
     scale: visualScale,
   };
 }

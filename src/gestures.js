@@ -221,9 +221,11 @@ function handleDoubleTap(clientX, clientY) {
     return;
   }
 
-  // Different region — zoom to it at its saved preferred size.
+  // Different region — zoom to it at its saved preferred size, centred on
+  // the tap point. Centring on the tap (not the region centre) lets the
+  // user pick which part of the region they want to read.
   const targetPx = getRegionZoomPx(region.fontSize) ?? DEFAULT_READING_FONT_PX;
-  const target = transformForRegion(region, targetPx);
+  const target = transformForRegion(region, clientX, clientY, targetPx);
   if (!target) return;
   currentRegionId = region.id;
   animateTo(target.x, target.y, target.scale);

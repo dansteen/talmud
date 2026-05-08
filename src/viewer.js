@@ -656,25 +656,24 @@ export function animateTo(targetX, targetY, targetScale, onDone) {
 }
 
 // Compute a target view transform that:
-//   • horizontally centres on the region's centroid — so when the column
-//     is narrower than the viewport a slice of each neighbouring column
-//     peeks in on either side ("show context"), and an L-shaped region
-//     centres on its main column rather than its empty corner.
-//   • vertically places the tap's y at the viewport centre — the user
-//     picks which part of a tall column they're zooming to.
+//   • places the tap point (clientX, clientY) at the viewport centre, and
 //   • scales so a glyph of the region's fontSize displays at `targetFontPx`
 //     CSS pixels — same calibration used for setting zoom on pinch end.
+// Centring on the tap (not on a region centre or centroid) means a tap on
+// the top of a column zooms to the top, a tap on the bottom to the bottom,
+// and a tap on a wrap-around line zooms there. Whatever sits next to the
+// tap fills the rest of the viewport — that's the user's "context".
 export function transformForRegion(region, clientX, clientY, targetFontPx) {
   if (!region || !(region.fontSize > 0) || !(targetFontPx > 0)) return null;
-  const desiredEff = targetFontPx / region.fontSize;     // PDF → screen
-  const visualScale = desiredEff / renderScale;
-  const cx = region.centroid?.x ?? (region.bbox.x + region.bbox.w / 2);
-  // Tap y → PDF y, then × desiredEff lands it at the screen centre.
+  const visualScale = (targetFontPx / region.fontSize) / renderScale;
+  // Tap → canvas-CSS coords at the *current* view.scale. Same point, taken
+  // through the new scale, must land at the screen centre.
   const r = canvas.getBoundingClientRect();
-  const tapPdfY = (clientY - r.top) / view.scale / renderScale;
+  const localX = (clientX - r.left) / view.scale;
+  const localY = (clientY - r.top)  / view.scale;
   return {
-    x: window.innerWidth  / 2 - cx      * desiredEff,
-    y: window.innerHeight / 2 - tapPdfY * desiredEff,
+    x: window.innerWidth  / 2 - localX * visualScale,
+    y: window.innerHeight / 2 - localY * visualScale,
     scale: visualScale,
   };
 }

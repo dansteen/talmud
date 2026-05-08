@@ -656,26 +656,47 @@ export function animateTo(targetX, targetY, targetScale, onDone) {
 }
 
 // Compute a target view transform that:
-//   • places the tap point (clientX, clientY) at the viewport centre, and
+//   • horizontally centres on the region's centroid — so when the column
+//     is narrower than the viewport a slice of each neighbouring column
+//     peeks in on either side ("show context"), and an L-shaped region
+//     centres on its main column rather than its empty corner.
+//   • vertically places the tap's y at the viewport centre — the user
+//     picks which part of a tall column they're zooming to.
 //   • scales so a glyph of the region's fontSize displays at `targetFontPx`
 //     CSS pixels — same calibration used for setting zoom on pinch end.
-// Centring on the tap (not the region's bbox/centroid) means a tap on the
-// top of a column zooms in on the top, a tap at the bottom on the bottom —
-// works correctly for L-shaped regions and avoids the "tap Rashi → zoom
-// Gemara" trap that bbox-centre creates when a region wraps under another.
 export function transformForRegion(region, clientX, clientY, targetFontPx) {
   if (!region || !(region.fontSize > 0) || !(targetFontPx > 0)) return null;
-  const visualScale = (targetFontPx / region.fontSize) / renderScale;
-  // Tap → canvas-CSS coords at the *current* view.scale. Same point, taken
-  // through the new scale, must land at the screen centre.
+  const desiredEff = targetFontPx / region.fontSize;     // PDF → screen
+  const visualScale = desiredEff / renderScale;
+  const cx = region.centroid?.x ?? (region.bbox.x + region.bbox.w / 2);
+  // Tap y → PDF y, then × desiredEff lands it at the screen centre.
   const r = canvas.getBoundingClientRect();
-  const localX = (clientX - r.left) / view.scale;
-  const localY = (clientY - r.top)  / view.scale;
+  const tapPdfY = (clientY - r.top) / view.scale / renderScale;
   return {
-    x: window.innerWidth  / 2 - localX * visualScale,
-    y: window.innerHeight / 2 - localY * visualScale,
+    x: window.innerWidth  / 2 - cx      * desiredEff,
+    y: window.innerHeight / 2 - tapPdfY * desiredEff,
     scale: visualScale,
   };
+}
+
+// Whether the focused region extends past the viewport in `direction`
+// ('up' | 'down' | 'left' | 'right'). Used by the directional double-tap:
+// scroll if there's content to reveal, else fall through to home.
+export function regionExtendsBeyondViewport(region, direction) {
+  if (!region?.bbox) return false;
+  const eff = effectiveScale();
+  const left   = view.x + region.bbox.x * eff;
+  const right  = view.x + (region.bbox.x + region.bbox.w) * eff;
+  const top    = view.y + region.bbox.y * eff;
+  const bottom = view.y + (region.bbox.y + region.bbox.h) * eff;
+  const margin = 20; // px — anything tighter is effectively "at the edge"
+  switch (direction) {
+    case 'up':    return top    < -margin;
+    case 'down':  return bottom > window.innerHeight + margin;
+    case 'left':  return left   < -margin;
+    case 'right': return right  > window.innerWidth  + margin;
+    default:      return false;
+  }
 }
 
 // Pan by (dx, dy) screen pixels, keep current scale. Used by double-tap

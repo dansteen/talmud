@@ -2,7 +2,7 @@ import {
   canvas,
   applyDelta, animateTo, scheduleQualityRender,
   transformForHome, transformForRegion, transformForScroll,
-  findRegionAtPoint, effectiveScale,
+  findRegionAtPoint, effectiveScale, regionExtendsBeyondViewport,
 } from './viewer.js';
 import { getRegionZoomPx, setRegionZoomPx } from './storage.js';
 
@@ -16,9 +16,14 @@ const DEFAULT_READING_FONT_PX = 32;
 // finger-distance change. 0.5 = half the natural responsiveness.
 const PINCH_SENSITIVITY = 0.5;
 
-// Fraction of the viewport height to pan when double-tapping the focused
-// region in the upper or lower third.
+// Fraction of the viewport to pan when double-tapping the focused region
+// off-centre. Same fraction applies to both axes.
 const SCROLL_FRAC = 0.7;
+
+// Fraction of the viewport (each axis) treated as the "centre" zone for
+// same-region double-tap. A tap whose offset from centre is smaller than
+// this on both axes counts as a centre tap → home.
+const CENTER_DEAD_ZONE = 0.15;
 
 // Active touches: identifier → {x, y}
 //
@@ -213,11 +218,24 @@ function handleDoubleTap(clientX, clientY) {
   }
 
   if (region.id === currentRegionId) {
-    // Same region — interpret the tap zone.
-    const h = window.innerHeight;
-    if (clientY < h / 3)        scrollFocused(+1);   // upper third → reveal what's above
-    else if (clientY > 2 * h / 3) scrollFocused(-1); // lower third → reveal what's below
-    else                        goHome();            // middle → home
+    // Same region — direction relative to viewport centre picks scroll
+    // axis. If the column doesn't extend off-screen in that direction,
+    // there's nothing to scroll to, so fall back to home.
+    const w = window.innerWidth, h = window.innerHeight;
+    const dx = clientX - w / 2, dy = clientY - h / 2;
+    const dxN = Math.abs(dx) / w, dyN = Math.abs(dy) / h;
+    if (dxN < CENTER_DEAD_ZONE && dyN < CENTER_DEAD_ZONE) {
+      goHome();
+      return;
+    }
+    const horizontal = dxN > dyN;
+    const direction = horizontal ? (dx < 0 ? 'left' : 'right')
+                                 : (dy < 0 ? 'up'   : 'down');
+    if (regionExtendsBeyondViewport(region, direction)) {
+      scrollFocused(direction);
+    } else {
+      goHome();
+    }
     return;
   }
 
@@ -232,10 +250,15 @@ function handleDoubleTap(clientX, clientY) {
 }
 
 function scrollFocused(direction) {
-  // direction = +1 reveals content above viewport (view.y increases),
-  // direction = -1 reveals content below viewport (view.y decreases).
-  const dy = direction * window.innerHeight * SCROLL_FRAC;
-  const target = transformForScroll(0, dy);
+  // To reveal content in `direction`, the canvas slides the opposite way.
+  let dx = 0, dy = 0;
+  switch (direction) {
+    case 'up':    dy = +window.innerHeight * SCROLL_FRAC; break;
+    case 'down':  dy = -window.innerHeight * SCROLL_FRAC; break;
+    case 'left':  dx = +window.innerWidth  * SCROLL_FRAC; break;
+    case 'right': dx = -window.innerWidth  * SCROLL_FRAC; break;
+  }
+  const target = transformForScroll(dx, dy);
   animateTo(target.x, target.y, target.scale);
 }
 

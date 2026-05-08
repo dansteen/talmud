@@ -296,6 +296,7 @@ function computeRegionStats(labels, gridW, gridH, cellSize, items, count) {
       id: i,
       pixelCount: 0,
       xMin: Infinity, yMin: Infinity, xMax: -Infinity, yMax: -Infinity,
+      sumX: 0, sumY: 0,
       fontSizes: [],
       itemCount: 0,
     };
@@ -312,6 +313,8 @@ function computeRegionStats(labels, gridW, gridH, cellSize, items, count) {
       if (py < s.yMin) s.yMin = py;
       if (px + cellSize > s.xMax) s.xMax = px + cellSize;
       if (py + cellSize > s.yMax) s.yMax = py + cellSize;
+      s.sumX += px + cellSize / 2;
+      s.sumY += py + cellSize / 2;
     }
   }
   for (const it of items) {
@@ -333,6 +336,11 @@ function computeRegionStats(labels, gridW, gridH, cellSize, items, count) {
     out.push({
       id: s.id,
       bbox: { x: s.xMin, y: s.yMin, w: s.xMax - s.xMin, h: s.yMax - s.yMin },
+      // Mean position of all labelled cells. Used to centre the viewport
+      // horizontally on the column's actual mass for L-shaped regions
+      // (e.g. Rashi with a wrap-around line under Gemara — bbox centre
+      // would land in the empty corner, centroid lands in the column).
+      centroid: { x: s.sumX / s.pixelCount, y: s.sumY / s.pixelCount },
       pixelCount: s.pixelCount,
       itemCount: s.itemCount,
       fontSize: median,

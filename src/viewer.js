@@ -656,35 +656,21 @@ export function animateTo(targetX, targetY, targetScale, onDone) {
 }
 
 // Compute a target view transform that:
-//   • vertically places the tap's y at the viewport centre — the user
-//     picks which slice of a tall column to read.
-//   • horizontally: if the column fits in the viewport with room to spare
-//     at the new scale, centre on the column's centroid so neighbouring
-//     columns peek in equally on both sides ("show context"). Otherwise
-//     centre on the tap, since the user already picked which part of the
-//     wide column to focus on.
+//   • places the tap point (clientX, clientY) at the viewport centre, and
 //   • scales so a glyph of the region's fontSize displays at `targetFontPx`
 //     CSS pixels — same calibration used for setting zoom on pinch end.
-const CONTEXT_MARGIN_FRAC = 0.05; // need ≥5% viewport on each side to count as "fits"
+// Tap-centric on both axes. When the column is narrower than the viewport
+// at the new scale, neighbouring columns naturally peek in around the tap;
+// when the column overflows, the tap picks which slice to focus on.
 export function transformForRegion(region, clientX, clientY, targetFontPx) {
   if (!region || !(region.fontSize > 0) || !(targetFontPx > 0)) return null;
-  const effScale = targetFontPx / region.fontSize;       // PDF → screen
-  const visualScale = effScale / renderScale;
+  const visualScale = (targetFontPx / region.fontSize) / renderScale;
   const r = canvas.getBoundingClientRect();
-  const tapPdfX = (clientX - r.left) / view.scale / renderScale;
-  const tapPdfY = (clientY - r.top)  / view.scale / renderScale;
-
-  // Column width on screen at the new scale.
-  const colScreenW = (region.bbox?.w ?? 0) * effScale;
-  const fits = colScreenW + 2 * CONTEXT_MARGIN_FRAC * window.innerWidth
-               <= window.innerWidth;
-  const centerXPdf = (fits && region.centroid)
-    ? region.centroid.x
-    : tapPdfX;
-
+  const localX = (clientX - r.left) / view.scale;
+  const localY = (clientY - r.top)  / view.scale;
   return {
-    x: window.innerWidth  / 2 - centerXPdf * effScale,
-    y: window.innerHeight / 2 - tapPdfY    * effScale,
+    x: window.innerWidth  / 2 - localX * visualScale,
+    y: window.innerHeight / 2 - localY * visualScale,
     scale: visualScale,
   };
 }

@@ -417,16 +417,28 @@ const TUNING_ATTEMPTS = [
   { closeRadiusY: 0, closeRadiusYSide: 0 },       // 6: drop all closing
 ];
 
+// Extra attempts run only when the basic ladder shows side-over-segmentation
+// (a side column split into multiple non-stray pieces). We bump
+// closeRadiusYSide to bridge wider line gaps inside the side column. The
+// overmerge-width check protects us from picking a value so large that
+// the left and right columns fuse via a vertical strip.
+const SIDE_ESCALATION_ATTEMPTS = [
+  { closeRadiusYSide: 10 },
+  { closeRadiusYSide: 15 },
+  { closeRadiusYSide: 20 },
+];
+
 // A region is "stray" if it's almost certainly noise we don't want to count
 // against the target — page numbers, running heads, catchwords. Two cases:
-//   - very narrow horizontally (a vertical strip of marks)
-//   - a thin line near the top or bottom edge (running head, page number,
-//     trailing catchword)
+//   - small blob (narrow AND short) — page numbers, marginal marks
+//   - thin line near the top or bottom edge — running heads, catchwords
+// Tall narrow regions are NOT stray: side meforshim (Tosafot, Mesores
+// HaShas, Ein Mishpat) sit in narrow columns and are full-height.
 function isStrayRegion(r) {
   const wRel = r.bbox.w / pageW;
   const hRel = r.bbox.h / pageH;
   const yCenter = (r.bbox.y + r.bbox.h / 2) / pageH;
-  if (wRel < 0.10) return true;
+  if (wRel < 0.08 && hRel < 0.20) return true;
   if (hRel < 0.04 && (yCenter < 0.10 || yCenter > 0.90)) return true;
   return false;
 }
@@ -451,6 +463,25 @@ function isOvermerged(regs) {
   return false;
 }
 
+// A side column is "over-segmented" when more than one non-stray region's
+// centroid sits in the leftmost or rightmost ~15% of the page. Side
+// commentary text (Tosafot, Mesores HaShas, etc.) often has wider line
+// spacing than the gemara, so the default closing radius can leave each
+// physical paragraph as its own component. When this happens we want to
+// try higher closeRadiusYSide values to bridge those line gaps.
+const SIDE_BAND_FRAC = 0.15;
+
+function sideOverSegmented(regs) {
+  let left = 0, right = 0;
+  for (const r of regs) {
+    if (isStrayRegion(r)) continue;
+    const cx = (r.bbox.x + r.bbox.w / 2) / pageW;
+    if (cx < SIDE_BAND_FRAC) left++;
+    else if (cx > 1 - SIDE_BAND_FRAC) right++;
+  }
+  return left > 1 || right > 1;
+}
+
 function autoTuneAndApply(baseOpts) {
   if (!textItems.length) {
     regionOpts = { ...regionOpts, ...baseOpts };
@@ -472,18 +503,39 @@ function autoTuneAndApply(baseOpts) {
   const tries = [];
   let chosen = null;
 
-  for (let i = 0; i < TUNING_ATTEMPTS.length; i++) {
-    const adj = TUNING_ATTEMPTS[i];
+  const runAttempt = (adj, idx) => {
     const opts = adj === null ? { ...regionOpts, ...baseOpts }
                               : { ...regionOpts, ...baseOpts, ...adj };
     const data = detectRegions(textItems, pageW, pageH, opts);
     const sig = countSignificantRegions(data.regions);
     const overmerged = isOvermerged(data.regions);
-    tries.push({ opts, data, sig, overmerged, idx: i });
-    // Early exit only on a "clean" hit — exact target AND no overmerged region.
-    if (sig === target && !overmerged) {
-      chosen = { ...tries[i], status: 'matched-target', attempts: i + 1 };
+    const sideOver = sideOverSegmented(data.regions);
+    tries.push({ opts, data, sig, overmerged, sideOver, idx });
+    return tries[tries.length - 1];
+  };
+
+  for (let i = 0; i < TUNING_ATTEMPTS.length; i++) {
+    const t = runAttempt(TUNING_ATTEMPTS[i], i);
+    // Early exit on a "perfect" hit — exact target, no overmerge, sides not
+    // over-segmented.
+    if (t.sig === target && !t.overmerged && !t.sideOver) {
+      chosen = { ...t, status: 'matched-target', attempts: i + 1 };
       break;
+    }
+  }
+
+  // If any basic-ladder attempt showed side-over-segmentation, escalate by
+  // bumping closeRadiusYSide. This bridges the wider line gaps in a side
+  // commentary column without affecting the inner zone. Stop early on a
+  // perfect hit, same as the basic ladder.
+  if (!chosen && tries.some(t => t.sideOver)) {
+    const baseIdx = tries.length;
+    for (let i = 0; i < SIDE_ESCALATION_ATTEMPTS.length; i++) {
+      const t = runAttempt(SIDE_ESCALATION_ATTEMPTS[i], baseIdx + i);
+      if (t.sig === target && !t.overmerged && !t.sideOver) {
+        chosen = { ...t, status: 'matched-target', attempts: baseIdx + i + 1 };
+        break;
+      }
     }
   }
 
@@ -491,8 +543,10 @@ function autoTuneAndApply(baseOpts) {
     // Tiered preference, all over the same set of attempts. We never fall
     // back to a synthetic single region — the natural detection result is
     // always more useful than collapsing the page into one region, even
-    // when nothing fits the expected count cleanly.
+    // when nothing fits the expected count cleanly. Within a tier, prefer
+    // attempts without side-over-segmentation, then closer-to-target.
     const sortByCloseness = (a, b) => {
+      if (a.sideOver !== b.sideOver) return (a.sideOver ? 1 : 0) - (b.sideOver ? 1 : 0);
       const da = Math.abs(a.sig - target);
       const db = Math.abs(b.sig - target);
       return da - db || a.idx - b.idx;
@@ -501,7 +555,7 @@ function autoTuneAndApply(baseOpts) {
       const pool = tries.filter(filter);
       if (!pool.length) return null;
       pool.sort(sortByCloseness);
-      return { ...pool[0], status, attempts: TUNING_ATTEMPTS.length };
+      return { ...pool[0], status, attempts: tries.length };
     };
     chosen =
       pickBest(t => t.sig >= minOk && t.sig <= maxOk && !t.overmerged, 'matched-range') ||

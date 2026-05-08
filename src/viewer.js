@@ -58,6 +58,14 @@ let textItems = [];
 // before any page has loaded. The labeled grid drives O(1) hit-testing.
 let regionsData = null;
 
+// Set per page during loadPage from computeTextData. Drives the auto-tuner's
+// expected region count (perek-end pages have ~double the regions).
+let pageIsPerekEnd = false;
+
+// Diagnostics from the most recent auto-tune attempt — surfaced in the debug
+// panel.
+let lastTuneInfo = null;
+
 // Visual transform applied to the canvas via CSS
 export const view = {
   scale: 1,  // visual scale on top of the canvas's natural CSS size
@@ -79,7 +87,7 @@ let renderTask = null;
 async function computeTextData(pdfPage) {
   const viewport = pdfPage.getViewport({ scale: 1 });
   const fullPage = { x: 0, y: 0, w: viewport.width, h: viewport.height };
-  const empty = { textBbox: fullPage, items: [] };
+  const empty = { textBbox: fullPage, items: [], perekEnd: false };
 
   let text;
   try { text = await pdfPage.getTextContent(); }
@@ -92,6 +100,7 @@ async function computeTextData(pdfPage) {
   const v = viewport.transform;
   const items = [];
   let xMin = Infinity, yMin = Infinity, xMax = -Infinity, yMax = -Infinity;
+  let allText = '';
 
   for (const item of text.items) {
     if (!item.str) continue;
@@ -115,7 +124,9 @@ async function computeTextData(pdfPage) {
       x: cx0, y: cy0, w: cx1 - cx0, h: cy1 - cy0,
       // Item height in viewport space ≈ font size in CSS px at scale 1.
       fontSize: cy1 - cy0,
+      str: item.str,
     });
+    allText += item.str + ' ';
 
     if (cx0 < xMin) xMin = cx0;
     if (cx1 > xMax) xMax = cx1;
@@ -131,9 +142,16 @@ async function computeTextData(pdfPage) {
     return empty;
   }
 
+  // "הדרן עלך …" marks the end of a perek. These pages typically have ~2x the
+  // usual region count (the page splits between the closing perek and the
+  // opening of the next). The phrase is unique enough that a substring match
+  // on the concatenated text content is reliable.
+  const perekEnd = allText.includes('הדרן');
+
   return {
     textBbox: { x: xMin, y: yMin, w: xMax - xMin, h: yMax - yMin },
     items,
+    perekEnd,
   };
 }
 
@@ -322,11 +340,14 @@ export async function loadPage(url, savedViewState = null) {
   const data = await computeTextData(currentPdfPage);
   textItems = data.items;
   textBbox = data.textBbox;
+  pageIsPerekEnd = data.perekEnd;
 
   // Detect regions from the per-item rects: low-res occupancy grid,
-  // morphological closing, connected components. Tunable via URL params
-  // ?cellSize=&closeRadius=&minRegionFrac= and live via the debug panel.
-  recomputeRegions(regionTuneFromUrl());
+  // morphological closing, connected components. The auto-tuner sweeps a
+  // small ladder of detection settings until the significant-region count
+  // matches expectations (4-5 normal, 8-10 on perek-end pages); URL params
+  // seed the first attempt and the sliders override live afterwards.
+  autoTuneAndApply(regionTuneFromUrl());
 
   // If we have a saved zoom/center for this page, render at that scale and
   // place the saved center at the screen center. Otherwise default to home
@@ -360,17 +381,194 @@ function recomputeRegions(opts) {
   }
   regionsData = detectRegions(textItems, pageW, pageH, regionOpts);
   regions = regionsData.regions;
+  // Manual tuning via slider — the auto-tune diagnostics from page-load are
+  // now stale, but we leave them in place so the user can still see what was
+  // tried before they took over.
+  if (DEBUG_REGIONS) updateDebugPanelStatus();
+  drawRegionOverlay();
+}
+
+// ── Auto-tuner ──────────────────────────────────────────────────────────
+//
+// After a page loads, run the detector with a small ladder of overrides on
+// top of the base options (URL params, if any) and pick the first attempt
+// whose significant-region count matches expectations. "Significant" means
+// the region isn't a stray catchword / running head / page number — those
+// are filtered before counting (they still appear in the result).
+//
+// Expected counts:
+//   - normal page:    4-5 regions (target 5; bias toward 5)
+//   - perek-end page: 8-10 regions (target 9)
+//
+// Strategy: try defaults first, then increasing closeRadiusY (bridges
+// line gaps within a column without bridging columns), then a finer grid
+// (separates columns better — useful when under-segmented). If nothing
+// fits the expected range, fall back to a single region covering the
+// text bbox so gestures still work.
+
+const TUNING_ATTEMPTS = [
+  null,                                        // 1: defaults from URL / regionOpts
+  { closeRadiusY: 3 },                          // 2: mild vertical merging
+  { closeRadiusY: 6 },                          // 3: more vertical merging
+  { closeRadiusY: 10 },                         // 4: aggressive vertical merging
+  { closeRadiusY: 0, closeRadiusYSide: 0 },     // 5: drop closing → separates columns
+];
+
+// A region is "stray" if it's almost certainly noise we don't want to count
+// against the target — page numbers, running heads, catchwords. Two cases:
+//   - very narrow horizontally (a vertical strip of marks)
+//   - a thin line near the top or bottom edge (running head, page number,
+//     trailing catchword)
+function isStrayRegion(r) {
+  const wRel = r.bbox.w / pageW;
+  const hRel = r.bbox.h / pageH;
+  const yCenter = (r.bbox.y + r.bbox.h / 2) / pageH;
+  if (wRel < 0.10) return true;
+  if (hRel < 0.04 && (yCenter < 0.10 || yCenter > 0.90)) return true;
+  return false;
+}
+
+function countSignificantRegions(regs) {
+  let n = 0;
+  for (const r of regs) if (!isStrayRegion(r)) n++;
+  return n;
+}
+
+function autoTuneAndApply(baseOpts) {
+  if (!textItems.length) {
+    regionOpts = { ...regionOpts, ...baseOpts };
+    regionsData = null;
+    regions = null;
+    lastTuneInfo = null;
+    if (DEBUG_REGIONS) {
+      syncDebugPanelSliders();
+      updateDebugPanelStatus();
+    }
+    drawRegionOverlay();
+    return;
+  }
+
+  const target = pageIsPerekEnd ? 9 : 5;
+  const minOk  = pageIsPerekEnd ? 8 : 4;
+  const maxOk  = pageIsPerekEnd ? 10 : 5;
+
+  const tries = [];
+  let chosen = null;
+
+  for (let i = 0; i < TUNING_ATTEMPTS.length; i++) {
+    const adj = TUNING_ATTEMPTS[i];
+    const opts = adj === null ? { ...regionOpts, ...baseOpts }
+                              : { ...regionOpts, ...baseOpts, ...adj };
+    const data = detectRegions(textItems, pageW, pageH, opts);
+    const sig = countSignificantRegions(data.regions);
+    tries.push({ opts, data, sig });
+    if (sig === target) {
+      chosen = { ...tries[i], status: 'matched-target', attempts: i + 1 };
+      break;
+    }
+  }
+
+  if (!chosen) {
+    // No exact target hit — pick the in-range attempt closest to target.
+    const inRange = tries
+      .map((t, i) => ({ ...t, idx: i }))
+      .filter(t => t.sig >= minOk && t.sig <= maxOk);
+    if (inRange.length) {
+      inRange.sort((a, b) => {
+        const da = Math.abs(a.sig - target);
+        const db = Math.abs(b.sig - target);
+        return da - db || a.idx - b.idx;
+      });
+      const best = inRange[0];
+      chosen = { ...best, status: 'matched-range', attempts: TUNING_ATTEMPTS.length };
+    }
+  }
+
+  if (!chosen) {
+    chosen = {
+      opts: { ...regionOpts, ...baseOpts },
+      data: makeFallbackRegionData(),
+      sig: 1,
+      status: 'fallback-single',
+      attempts: TUNING_ATTEMPTS.length,
+    };
+  }
+
+  regionOpts = { ...regionOpts, ...chosen.opts };
+  regionsData = chosen.data;
+  regions = chosen.data.regions;
+  lastTuneInfo = {
+    status: chosen.status,
+    attempts: chosen.attempts,
+    sigCount: chosen.sig,
+    perekEnd: pageIsPerekEnd,
+  };
+
   if (DEBUG_REGIONS) {
-    const { gridW, gridH, cellSize, regions: regs } = regionsData;
     // eslint-disable-next-line no-console
     console.log(
-      `[regions] cell=${cellSize}pt grid=${gridW}x${gridH}`,
-      `→ ${regs.length} regions`,
-      regs.map(r => `#${r.id} fs=${r.fontSize.toFixed(1)} cells=${r.pixelCount} items=${r.itemCount}`),
+      `[regions] auto-tune: ${chosen.status} · ${chosen.attempts} tries · sig=${chosen.sig}`,
+      pageIsPerekEnd ? '(perek-end)' : '',
+      `→ ${regions.length} raw regions`,
+      regions.map(r => `#${r.id} fs=${r.fontSize.toFixed(1)} cells=${r.pixelCount} items=${r.itemCount}${isStrayRegion(r) ? ' [stray]' : ''}`),
     );
+    syncDebugPanelSliders();
     updateDebugPanelStatus();
   }
   drawRegionOverlay();
+}
+
+// Single-region fallback: cover the text bbox so double-tap zoom and the
+// debug overlay still have something usable. We paint occupancy where text
+// items actually are (not a solid rectangle) so the visualization mirrors
+// the real text shape; everything gets label 1.
+function makeFallbackRegionData() {
+  const cellSize = regionOpts.cellSize ?? 1;
+  const gridW = Math.max(1, Math.ceil(pageW / cellSize));
+  const gridH = Math.max(1, Math.ceil(pageH / cellSize));
+  const labels = new Uint32Array(gridW * gridH);
+  const grid = new Uint8Array(gridW * gridH);
+
+  for (const it of textItems) {
+    const ix0 = Math.max(0,     Math.floor(it.x / cellSize));
+    const iy0 = Math.max(0,     Math.floor(it.y / cellSize));
+    const ix1 = Math.min(gridW, Math.ceil((it.x + it.w) / cellSize));
+    const iy1 = Math.min(gridH, Math.ceil((it.y + it.h) / cellSize));
+    for (let y = iy0; y < iy1; y++) {
+      const row = y * gridW;
+      for (let x = ix0; x < ix1; x++) {
+        grid[row + x] = 1;
+        labels[row + x] = 1;
+      }
+    }
+  }
+
+  let pixelCount = 0;
+  for (let i = 0; i < grid.length; i++) if (grid[i]) pixelCount++;
+
+  const bx = textBbox?.x ?? 0;
+  const by = textBbox?.y ?? 0;
+  const bw = textBbox?.w ?? pageW;
+  const bh = textBbox?.h ?? pageH;
+
+  // Median font size of all items (best-effort proxy for a "median region").
+  const fs = textItems.map(it => it.fontSize).sort((a, b) => a - b);
+  const medianFs = fs.length ? fs[fs.length >> 1] : 12;
+
+  return {
+    regions: [{
+      id: 1,
+      bbox: { x: bx, y: by, w: bw, h: bh },
+      pixelCount,
+      itemCount: textItems.length,
+      fontSize: medianFs,
+    }],
+    labels,
+    grid,
+    gridW,
+    gridH,
+    cellSize,
+  };
 }
 
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
@@ -388,6 +586,7 @@ const PANEL_CONTROLS = [
 ];
 
 let panelStatusEl = null;
+const sliderRefs = new Map(); // key → { input, val, step }
 const overlayDisplay = { boxes: true, colors: true };
 const PANEL_POS_KEY = 'regionDebugPanelPos';
 
@@ -448,6 +647,7 @@ function createRegionDebugPanel() {
       recomputeRegions({ [c.key]: v });
     });
 
+    sliderRefs.set(c.key, { input, val, step: c.step });
     panel.appendChild(row);
   }
 
@@ -538,9 +738,30 @@ function formatVal(v, step) {
 }
 
 function updateDebugPanelStatus() {
-  if (!panelStatusEl || !regionsData) return;
-  const { gridW, gridH, regions: regs } = regionsData;
-  panelStatusEl.textContent = `${gridW}×${gridH} grid · ${regs.length} regions`;
+  if (!panelStatusEl) return;
+  const lines = [];
+  if (regionsData) {
+    const { gridW, gridH, regions: regs } = regionsData;
+    lines.push(`${gridW}×${gridH} grid · ${regs.length} regions`);
+  }
+  if (lastTuneInfo) {
+    const t = lastTuneInfo;
+    const tag = t.perekEnd ? ' [perek-end]' : '';
+    lines.push(`tune: ${t.status} · ${t.attempts} ${t.attempts === 1 ? 'try' : 'tries'} · sig=${t.sigCount}${tag}`);
+  }
+  panelStatusEl.style.whiteSpace = 'pre-line';
+  panelStatusEl.textContent = lines.join('\n');
+}
+
+// Push current regionOpts values into the slider DOM so the panel reflects
+// the auto-tuner's chosen settings after each page load.
+function syncDebugPanelSliders() {
+  for (const [key, ref] of sliderRefs) {
+    const v = regionOpts[key];
+    if (v === undefined || !Number.isFinite(v)) continue;
+    ref.input.value = String(v);
+    ref.val.textContent = formatVal(v, ref.step);
+  }
 }
 
 // ── Debug overlay (?debug=1 or 'd' key) ────────────────────────────────

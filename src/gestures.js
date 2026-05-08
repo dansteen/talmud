@@ -23,7 +23,7 @@ const SCROLL_FRAC = 0.7;
 // Fraction of the viewport (each axis) treated as the "centre" zone for
 // same-region double-tap. A tap whose offset from centre is smaller than
 // this on both axes counts as a centre tap → home.
-const CENTER_DEAD_ZONE = 0.15;
+const CENTER_DEAD_ZONE = 0.20;
 
 // Active touches: identifier → {x, y}
 //

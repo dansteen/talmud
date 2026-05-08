@@ -379,28 +379,20 @@ function recomputeRegions(opts) {
     drawRegionOverlay();
     return;
   }
-  if (DEBUG_REGIONS) {
-    // eslint-disable-next-line no-console
-    console.log('[recomputeRegions] opts=', JSON.stringify(regionOpts),
-      'pageW=', pageW, 'pageH=', pageH, 'items=', textItems.length);
-  }
   regionsData = detectRegions(textItems, pageW, pageH, regionOpts);
   regions = regionsData.regions;
-  if (DEBUG_REGIONS) {
-    // eslint-disable-next-line no-console
-    console.log('[recomputeRegions] result regions=', regions.length,
-      'sig=', countSignificantRegions(regions),
-      'overmerged=', isOvermerged(regions));
-    updateDebugPanelStatus();
-  }
+  // Manual tuning via slider — the auto-tune diagnostics from page-load are
+  // now stale, but we leave them in place so the user can still see what was
+  // tried before they took over.
+  if (DEBUG_REGIONS) updateDebugPanelStatus();
   drawRegionOverlay();
 }
 
 // ── Auto-tuner ──────────────────────────────────────────────────────────
 //
 // After a page loads, run the detector with a small ladder of overrides on
-// top of the base options (URL params, if any) and pick the first attempt
-// whose significant-region count matches expectations. "Significant" means
+// top of the base options (URL params, if any) and pick the attempt whose
+// significant-region count best matches expectations. "Significant" means
 // the region isn't a stray catchword / running head / page number — those
 // are filtered before counting (they still appear in the result).
 //
@@ -409,10 +401,12 @@ function recomputeRegions(opts) {
 //   - perek-end page: 8-10 regions (target 9)
 //
 // Strategy: try defaults first, then increasing closeRadiusY (bridges
-// line gaps within a column without bridging columns), then a finer grid
-// (separates columns better — useful when under-segmented). If nothing
-// fits the expected range, fall back to a single region covering the
-// text bbox so gestures still work.
+// line gaps within a column without bridging columns), then variants that
+// drop side closing (separates side meforshim from gemara). Selection is
+// tiered: clean in-range > overmerged in-range > clean out-of-range >
+// overmerged out-of-range, ties broken by closeness to target. We never
+// invent a synthetic single-region result — the natural detection output
+// is always more useful than collapsing the page into one region.
 
 const TUNING_ATTEMPTS = [
   null,                                          // 1: defaults from URL / regionOpts
@@ -482,19 +476,9 @@ function autoTuneAndApply(baseOpts) {
     const adj = TUNING_ATTEMPTS[i];
     const opts = adj === null ? { ...regionOpts, ...baseOpts }
                               : { ...regionOpts, ...baseOpts, ...adj };
-    if (DEBUG_REGIONS) {
-      // eslint-disable-next-line no-console
-      console.log(`[autoTune attempt ${i+1}] opts=`, JSON.stringify(opts),
-        'pageW=', pageW, 'pageH=', pageH, 'items=', textItems.length);
-    }
     const data = detectRegions(textItems, pageW, pageH, opts);
     const sig = countSignificantRegions(data.regions);
     const overmerged = isOvermerged(data.regions);
-    if (DEBUG_REGIONS) {
-      // eslint-disable-next-line no-console
-      console.log(`[autoTune attempt ${i+1}] result regions=`, data.regions.length,
-        'sig=', sig, 'overmerged=', overmerged);
-    }
     tries.push({ opts, data, sig, overmerged, idx: i });
     // Early exit only on a "clean" hit — exact target AND no overmerged region.
     if (sig === target && !overmerged) {
@@ -504,35 +488,26 @@ function autoTuneAndApply(baseOpts) {
   }
 
   if (!chosen) {
-    // Prefer attempts in the acceptable range that aren't overmerged. If
-    // none of those exist, allow overmerged-but-in-range as a fallback.
+    // Tiered preference, all over the same set of attempts. We never fall
+    // back to a synthetic single region — the natural detection result is
+    // always more useful than collapsing the page into one region, even
+    // when nothing fits the expected count cleanly.
     const sortByCloseness = (a, b) => {
       const da = Math.abs(a.sig - target);
       const db = Math.abs(b.sig - target);
       return da - db || a.idx - b.idx;
     };
-    const cleanInRange = tries.filter(t =>
-      t.sig >= minOk && t.sig <= maxOk && !t.overmerged);
-    if (cleanInRange.length) {
-      cleanInRange.sort(sortByCloseness);
-      chosen = { ...cleanInRange[0], status: 'matched-range', attempts: TUNING_ATTEMPTS.length };
-    } else {
-      const dirtyInRange = tries.filter(t => t.sig >= minOk && t.sig <= maxOk);
-      if (dirtyInRange.length) {
-        dirtyInRange.sort(sortByCloseness);
-        chosen = { ...dirtyInRange[0], status: 'matched-range-overmerged', attempts: TUNING_ATTEMPTS.length };
-      }
-    }
-  }
-
-  if (!chosen) {
-    chosen = {
-      opts: { ...regionOpts, ...baseOpts },
-      data: makeFallbackRegionData(),
-      sig: 1,
-      status: 'fallback-single',
-      attempts: TUNING_ATTEMPTS.length,
+    const pickBest = (filter, status) => {
+      const pool = tries.filter(filter);
+      if (!pool.length) return null;
+      pool.sort(sortByCloseness);
+      return { ...pool[0], status, attempts: TUNING_ATTEMPTS.length };
     };
+    chosen =
+      pickBest(t => t.sig >= minOk && t.sig <= maxOk && !t.overmerged, 'matched-range') ||
+      pickBest(t => t.sig >= minOk && t.sig <= maxOk,                  'matched-range-overmerged') ||
+      pickBest(t => !t.overmerged,                                      'out-of-range') ||
+      pickBest(() => true,                                              'out-of-range-overmerged');
   }
 
   regionOpts = { ...regionOpts, ...chosen.opts };
@@ -557,59 +532,6 @@ function autoTuneAndApply(baseOpts) {
     updateDebugPanelStatus();
   }
   drawRegionOverlay();
-}
-
-// Single-region fallback: cover the text bbox so double-tap zoom and the
-// debug overlay still have something usable. We paint occupancy where text
-// items actually are (not a solid rectangle) so the visualization mirrors
-// the real text shape; everything gets label 1.
-function makeFallbackRegionData() {
-  const cellSize = regionOpts.cellSize ?? 1;
-  const gridW = Math.max(1, Math.ceil(pageW / cellSize));
-  const gridH = Math.max(1, Math.ceil(pageH / cellSize));
-  const labels = new Uint32Array(gridW * gridH);
-  const grid = new Uint8Array(gridW * gridH);
-
-  for (const it of textItems) {
-    const ix0 = Math.max(0,     Math.floor(it.x / cellSize));
-    const iy0 = Math.max(0,     Math.floor(it.y / cellSize));
-    const ix1 = Math.min(gridW, Math.ceil((it.x + it.w) / cellSize));
-    const iy1 = Math.min(gridH, Math.ceil((it.y + it.h) / cellSize));
-    for (let y = iy0; y < iy1; y++) {
-      const row = y * gridW;
-      for (let x = ix0; x < ix1; x++) {
-        grid[row + x] = 1;
-        labels[row + x] = 1;
-      }
-    }
-  }
-
-  let pixelCount = 0;
-  for (let i = 0; i < grid.length; i++) if (grid[i]) pixelCount++;
-
-  const bx = textBbox?.x ?? 0;
-  const by = textBbox?.y ?? 0;
-  const bw = textBbox?.w ?? pageW;
-  const bh = textBbox?.h ?? pageH;
-
-  // Median font size of all items (best-effort proxy for a "median region").
-  const fs = textItems.map(it => it.fontSize).sort((a, b) => a - b);
-  const medianFs = fs.length ? fs[fs.length >> 1] : 12;
-
-  return {
-    regions: [{
-      id: 1,
-      bbox: { x: bx, y: by, w: bw, h: bh },
-      pixelCount,
-      itemCount: textItems.length,
-      fontSize: medianFs,
-    }],
-    labels,
-    grid,
-    gridW,
-    gridH,
-    cellSize,
-  };
 }
 
 // ── Debug controls (?debug=1) ───────────────────────────────────────────

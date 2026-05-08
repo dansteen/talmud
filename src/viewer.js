@@ -408,25 +408,31 @@ function recomputeRegions(opts) {
 // invent a synthetic single-region result — the natural detection output
 // is always more useful than collapsing the page into one region.
 
-const TUNING_ATTEMPTS = [
-  null,                                          // 1: defaults from URL / regionOpts (Y=0, YSide=5)
-  { closeRadiusY: 1 },                            // 2: minimal Y bump
-  { closeRadiusY: 2 },                            // 3: small Y bump
-  { closeRadiusY: 3 },                            // 4: medium Y bump
-  { closeRadiusY: 6 },                            // 5: bigger Y bump
-  { closeRadiusY: 10 },                           // 6: aggressive Y bump
-  { closeRadiusYSide: 4 },                        // 7: small YSide reduction (some pages over-merge sides at default 5)
-  { closeRadiusYSide: 0 },                        // 8: drop side-band closing (separates side meforshim from gemara when side closing was bridging them)
-  { closeRadiusY: 0, closeRadiusYSide: 0 },       // 9: drop all closing
-];
+// Sweep every integer Y from 1..10 (Y=0 is the default = attempt 1) and
+// every integer YSide reduction from 4..0 (YSide=5 is the default).
+// Skipping values misses pages whose sweet spot lands on the skipped
+// integer; the cost of a few extra detectRegions calls is small and the
+// auto-tuner early-exits the moment it finds a perfect match.
+function buildTuningAttempts() {
+  const attempts = [null];                                 // defaults (Y=0, YSide=5)
+  for (let y = 1; y <= 10; y++) attempts.push({ closeRadiusY: y });
+  for (let s = 4; s >= 0; s--) attempts.push({ closeRadiusYSide: s });
+  attempts.push({ closeRadiusY: 0, closeRadiusYSide: 0 });  // drop everything
+  return attempts;
+}
+const TUNING_ATTEMPTS = buildTuningAttempts();
 
 // Extra attempts run only when the basic ladder shows side-over-segmentation
 // (a side column split into multiple non-stray pieces). We bump
-// closeRadiusYSide to bridge wider line gaps inside the side column. The
-// overmerge-width check protects us from picking a value so large that
-// the left and right columns fuse via a vertical strip.
+// closeRadiusYSide above the default to bridge wider line gaps inside the
+// side column. The overmerge-width check protects us from picking a value
+// so large that the left and right columns fuse via a vertical strip.
 const SIDE_ESCALATION_ATTEMPTS = [
+  { closeRadiusYSide: 6 },
+  { closeRadiusYSide: 7 },
+  { closeRadiusYSide: 8 },
   { closeRadiusYSide: 10 },
+  { closeRadiusYSide: 12 },
   { closeRadiusYSide: 15 },
   { closeRadiusYSide: 20 },
 ];

@@ -67,7 +67,10 @@ let detectionItems = [];
 // Hit-testing keeps the full textItems list, so a tap on filtered text
 // still finds something (or falls through to the no-region path naturally).
 function filterDetectionItems(items) {
-  const wideMax = pageW * 0.50;
+  // Threshold tuned against megillah:2:a, where "real" column lines top out
+  // around 30% of page width and column-bridging items run 40-60%. A 35%
+  // cutoff cleanly separates them.
+  const wideMax = pageW * 0.35;
   return items.filter(it =>
     it.str && it.str.trim() && it.w <= wideMax
   );

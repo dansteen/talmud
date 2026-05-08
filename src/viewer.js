@@ -438,7 +438,10 @@ const SIDE_ESCALATION_ATTEMPTS = [
 ];
 
 // A region is "stray" if it's almost certainly noise we don't want to count
-// against the target — page numbers, running heads, catchwords. Two cases:
+// against the target — page numbers, running heads, catchwords, and thin
+// fragmentary slivers. Cases:
+//   - very thin (< ~2% of page height) — single-line slivers anywhere on
+//     the page; legitimate columns are always many lines tall
 //   - small blob (narrow AND short) — page numbers, marginal marks
 //   - thin line near the top or bottom edge — running heads, catchwords
 // Tall narrow regions are NOT stray: side meforshim (Tosafot, Mesores
@@ -447,6 +450,7 @@ function isStrayRegion(r) {
   const wRel = r.bbox.w / pageW;
   const hRel = r.bbox.h / pageH;
   const yCenter = (r.bbox.y + r.bbox.h / 2) / pageH;
+  if (hRel < 0.02) return true;
   if (wRel < 0.08 && hRel < 0.20) return true;
   if (hRel < 0.04 && (yCenter < 0.10 || yCenter > 0.90)) return true;
   return false;

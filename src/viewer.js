@@ -52,45 +52,14 @@ let textBbox = null;
 
 // Per-item rectangles + font size in viewport-coordinate units (y top-down).
 // `textItems` is the full set used for hit-testing (findItemAtPoint, etc).
-// `detectionItems` is a filtered subset fed to detectRegions — see
-// filterDetectionItems for what gets dropped and why.
+// `detectionItems` is fed to detectRegions; we drop only whitespace-only
+// items (which a few PDFs encode as wide invisible "padding" runs that
+// would bridge unrelated regions for no useful reason).
 let textItems = [];
 let detectionItems = [];
 
-// Drop items that are useless (or harmful) for region detection:
-//   - whitespace-only items (e.g., wide spaces used as visual padding;
-//     PDFs sometimes encode these as horizontal bridges that span columns)
-//   - items whose bbox is wider than half the page — typically bottom
-//     L-shape commentary lines whose internal letter-spacing makes them
-//     visually look like separate columns but whose bbox is one wide
-//     rectangle bridging gemara→meforshim.
-// Hit-testing keeps the full textItems list, so a tap on filtered text
-// still finds something (or falls through to the no-region path naturally).
-// On standard Talmud 3-column daf the inter-column gap between gemara and
-// the inner-meforshim (rashi) column sits near 48% of page width. Items
-// whose bbox crosses this x have their right edge clipped here for the
-// purpose of region detection — they still contribute occupancy to the
-// gemara column but no longer bridge into rashi via connected components.
-// 0.48 is a fixed heuristic that fits standard layouts; a future per-page
-// gap detector could replace it.
-const GEMARA_RASHI_GAP_FRAC = 0.48;
-
 function filterDetectionItems(items) {
-  const gap = pageW * GEMARA_RASHI_GAP_FRAC;
-  const out = [];
-  for (const it of items) {
-    if (!it.str || !it.str.trim()) continue;
-    let w = it.w;
-    if (it.x < gap && it.x + it.w > gap) {
-      // Clip to the gemara-side portion. The right portion contains rendered
-      // glyphs visually (the Mishnah-quote extension), but we forfeit grid
-      // coverage there to break the connected-components bridge.
-      w = gap - it.x;
-      if (w < 1) continue;
-    }
-    out.push({ ...it, w });
-  }
-  return out;
+  return items.filter(it => it.str && it.str.trim());
 }
 
 // Region detection result: { regions, labels, gridW, gridH, cellSize } or null

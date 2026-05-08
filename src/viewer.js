@@ -407,11 +407,12 @@ function recomputeRegions(opts) {
 // text bbox so gestures still work.
 
 const TUNING_ATTEMPTS = [
-  null,                                        // 1: defaults from URL / regionOpts
-  { closeRadiusY: 3 },                          // 2: mild vertical merging
-  { closeRadiusY: 6 },                          // 3: more vertical merging
-  { closeRadiusY: 10 },                         // 4: aggressive vertical merging
-  { closeRadiusY: 0, closeRadiusYSide: 0 },     // 5: drop closing → separates columns
+  null,                                          // 1: defaults from URL / regionOpts
+  { closeRadiusY: 3 },                            // 2: mild vertical merging
+  { closeRadiusY: 6 },                            // 3: more vertical merging
+  { closeRadiusY: 10 },                           // 4: aggressive vertical merging
+  { closeRadiusYSide: 0 },                        // 5: drop side-band closing (separates side meforshim from gemara when side closing was bridging them)
+  { closeRadiusY: 0, closeRadiusYSide: 0 },       // 6: drop all closing
 ];
 
 // A region is "stray" if it's almost certainly noise we don't want to count
@@ -432,6 +433,20 @@ function countSignificantRegions(regs) {
   let n = 0;
   for (const r of regs) if (!isStrayRegion(r)) n++;
   return n;
+}
+
+// Reject a tuning result that contains a non-stray region wider than this
+// fraction of the page — the legitimate gemara column tops out around ~50%
+// of page width on a 3-column daf, so anything wider is almost certainly a
+// gemara+rashi (or gemara+tosafot) merge.
+const OVERMERGED_WIDTH_FRAC = 0.55;
+
+function isOvermerged(regs) {
+  for (const r of regs) {
+    if (isStrayRegion(r)) continue;
+    if (r.bbox.w / pageW > OVERMERGED_WIDTH_FRAC) return true;
+  }
+  return false;
 }
 
 function autoTuneAndApply(baseOpts) {
@@ -461,26 +476,34 @@ function autoTuneAndApply(baseOpts) {
                               : { ...regionOpts, ...baseOpts, ...adj };
     const data = detectRegions(textItems, pageW, pageH, opts);
     const sig = countSignificantRegions(data.regions);
-    tries.push({ opts, data, sig });
-    if (sig === target) {
+    const overmerged = isOvermerged(data.regions);
+    tries.push({ opts, data, sig, overmerged, idx: i });
+    // Early exit only on a "clean" hit — exact target AND no overmerged region.
+    if (sig === target && !overmerged) {
       chosen = { ...tries[i], status: 'matched-target', attempts: i + 1 };
       break;
     }
   }
 
   if (!chosen) {
-    // No exact target hit — pick the in-range attempt closest to target.
-    const inRange = tries
-      .map((t, i) => ({ ...t, idx: i }))
-      .filter(t => t.sig >= minOk && t.sig <= maxOk);
-    if (inRange.length) {
-      inRange.sort((a, b) => {
-        const da = Math.abs(a.sig - target);
-        const db = Math.abs(b.sig - target);
-        return da - db || a.idx - b.idx;
-      });
-      const best = inRange[0];
-      chosen = { ...best, status: 'matched-range', attempts: TUNING_ATTEMPTS.length };
+    // Prefer attempts in the acceptable range that aren't overmerged. If
+    // none of those exist, allow overmerged-but-in-range as a fallback.
+    const sortByCloseness = (a, b) => {
+      const da = Math.abs(a.sig - target);
+      const db = Math.abs(b.sig - target);
+      return da - db || a.idx - b.idx;
+    };
+    const cleanInRange = tries.filter(t =>
+      t.sig >= minOk && t.sig <= maxOk && !t.overmerged);
+    if (cleanInRange.length) {
+      cleanInRange.sort(sortByCloseness);
+      chosen = { ...cleanInRange[0], status: 'matched-range', attempts: TUNING_ATTEMPTS.length };
+    } else {
+      const dirtyInRange = tries.filter(t => t.sig >= minOk && t.sig <= maxOk);
+      if (dirtyInRange.length) {
+        dirtyInRange.sort(sortByCloseness);
+        chosen = { ...dirtyInRange[0], status: 'matched-range-overmerged', attempts: TUNING_ATTEMPTS.length };
+      }
     }
   }
 

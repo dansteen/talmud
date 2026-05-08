@@ -66,20 +66,31 @@ let detectionItems = [];
 //     rectangle bridging gemara→meforshim.
 // Hit-testing keeps the full textItems list, so a tap on filtered text
 // still finds something (or falls through to the no-region path naturally).
+// On standard Talmud 3-column daf the inter-column gap between gemara and
+// the inner-meforshim (rashi) column sits near 48% of page width. Items
+// whose bbox crosses this x have their right edge clipped here for the
+// purpose of region detection — they still contribute occupancy to the
+// gemara column but no longer bridge into rashi via connected components.
+// 0.48 is a fixed heuristic that fits standard layouts; a future per-page
+// gap detector could replace it.
+const GEMARA_RASHI_GAP_FRAC = 0.48;
+
 function filterDetectionItems(items) {
-  return items.filter(it => {
-    if (!it.str || !it.str.trim()) return false;
-    const xL = it.x / pageW;
-    const xR = (it.x + it.w) / pageW;
-    // Cross-column bridge: starts before the inner-meforshim (rashi) column
-    // and extends past the inter-column gap. Legit gemara lines top out
-    // around xR ≈ 47%; legit rashi starts at xL ≈ 49%. Items that cross
-    // both sides of the ~48% boundary are PDF bridges (a single wide item
-    // whose internal letter-spacing produces the visual column break) and
-    // they fuse columns into one connected component.
-    if (xL < 0.45 && xR > 0.50) return false;
-    return true;
-  });
+  const gap = pageW * GEMARA_RASHI_GAP_FRAC;
+  const out = [];
+  for (const it of items) {
+    if (!it.str || !it.str.trim()) continue;
+    let w = it.w;
+    if (it.x < gap && it.x + it.w > gap) {
+      // Clip to the gemara-side portion. The right portion contains rendered
+      // glyphs visually (the Mishnah-quote extension), but we forfeit grid
+      // coverage there to break the connected-components bridge.
+      w = gap - it.x;
+      if (w < 1) continue;
+    }
+    out.push({ ...it, w });
+  }
+  return out;
 }
 
 // Region detection result: { regions, labels, gridW, gridH, cellSize } or null

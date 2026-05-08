@@ -656,23 +656,52 @@ export function animateTo(targetX, targetY, targetScale, onDone) {
 }
 
 // Compute a target view transform that:
-//   • places the tap point (clientX, clientY) at the viewport centre, and
+//   • places the tap's y at the viewport centre (the user picks which
+//     slice of a tall column they want to read),
+//   • horizontally brings that section of the column into the centre of
+//     the viewport — uses the region's labelled-cell extent in the row at
+//     the tap's y, so an L-shaped region centres on whichever segment the
+//     tap actually sits in (main column vs wrap-around line),
 //   • scales so a glyph of the region's fontSize displays at `targetFontPx`
-//     CSS pixels — same calibration used for setting zoom on pinch end.
-// Tap-centric on both axes. When the column is narrower than the viewport
-// at the new scale, neighbouring columns naturally peek in around the tap;
-// when the column overflows, the tap picks which slice to focus on.
+//     CSS pixels.
+// animateTo() runs the result through constrainView() afterwards, so the
+// page-edge constraint pulls things back if column-centring would push
+// the visible bbox edge past the screen edge.
 export function transformForRegion(region, clientX, clientY, targetFontPx) {
   if (!region || !(region.fontSize > 0) || !(targetFontPx > 0)) return null;
-  const visualScale = (targetFontPx / region.fontSize) / renderScale;
+  const desiredEff = targetFontPx / region.fontSize;     // PDF → screen
+  const visualScale = desiredEff / renderScale;
   const r = canvas.getBoundingClientRect();
-  const localX = (clientX - r.left) / view.scale;
-  const localY = (clientY - r.top)  / view.scale;
+  const tapPdfY = (clientY - r.top) / view.scale / renderScale;
+  const colX = regionRowCenterX(region, tapPdfY);
   return {
-    x: window.innerWidth  / 2 - localX * visualScale,
-    y: window.innerHeight / 2 - localY * visualScale,
+    x: window.innerWidth  / 2 - colX    * desiredEff,
+    y: window.innerHeight / 2 - tapPdfY * desiredEff,
     scale: visualScale,
   };
+}
+
+// Horizontal centre of the region's labelled cells in the grid row that
+// contains `pdfY`. Returns a per-row centre, so a region whose shape
+// differs at different y's (like an L-shape) gets centred on the bit
+// near the tap, not on its overall centroid. Falls back to centroid →
+// bbox centre when the tap row has no labelled cells of this region.
+function regionRowCenterX(region, pdfY) {
+  const fallback = region.centroid?.x ?? (region.bbox.x + region.bbox.w / 2);
+  if (!regionsData) return fallback;
+  const { labels, gridW, gridH, cellSize } = regionsData;
+  const ty = Math.floor(pdfY / cellSize);
+  if (ty < 0 || ty >= gridH) return fallback;
+  let xMin = Infinity, xMax = -Infinity;
+  const rowBase = ty * gridW;
+  for (let x = 0; x < gridW; x++) {
+    if (labels[rowBase + x] === region.id) {
+      const px = x * cellSize;
+      if (px < xMin) xMin = px;
+      if (px + cellSize > xMax) xMax = px + cellSize;
+    }
+  }
+  return xMin === Infinity ? fallback : (xMin + xMax) / 2;
 }
 
 // Whether the focused region extends past the viewport in `direction`

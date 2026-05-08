@@ -518,8 +518,17 @@ function autoTuneAndApply(baseOpts) {
   }
 
   regionOpts = { ...regionOpts, ...chosen.opts };
-  regionsData = chosen.data;
-  regions = chosen.data.regions;
+  // Re-run detection with the merged regionOpts instead of using
+  // chosen.data directly. The result is identical in the deterministic
+  // case but guarantees the rendered state goes through the same code
+  // path a slider movement would, so a slider toggle that returns to
+  // the same value can never produce different regions.
+  if (chosen.status === 'fallback-single') {
+    regionsData = chosen.data;
+  } else {
+    regionsData = detectRegions(textItems, pageW, pageH, regionOpts);
+  }
+  regions = regionsData.regions;
   lastTuneInfo = {
     status: chosen.status,
     attempts: chosen.attempts,

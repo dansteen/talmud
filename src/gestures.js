@@ -241,9 +241,9 @@ function handleDoubleTap(clientX, clientY) {
 }
 
 function handleFocusedTap(region, clientX, clientY) {
-  // Direction relative to viewport centre picks scroll axis. If the focused
-  // column doesn't extend off-screen in that direction, there's nothing to
-  // scroll to, so fall back to home.
+  // Only the centre returns home. A side tap scrolls if the focused column
+  // extends off-screen in that direction; otherwise it's a no-op (we don't
+  // pull the user back to home behind their back — they tap centre to home).
   const w = window.innerWidth, h = window.innerHeight;
   const dx = clientX - w / 2, dy = clientY - h / 2;
   const dxN = Math.abs(dx) / w, dyN = Math.abs(dy) / h;
@@ -256,9 +256,8 @@ function handleFocusedTap(region, clientX, clientY) {
                                : (dy < 0 ? 'up'   : 'down');
   if (regionExtendsBeyondViewport(region, direction)) {
     scrollFocused(direction);
-  } else {
-    goHome();
   }
+  // else: nothing to scroll to — leave the view alone.
 }
 
 function scrollFocused(direction) {

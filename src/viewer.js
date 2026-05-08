@@ -656,24 +656,35 @@ export function animateTo(targetX, targetY, targetScale, onDone) {
 }
 
 // Compute a target view transform that:
-//   • places the tap point (clientX, clientY) at the viewport centre, and
+//   • vertically places the tap's y at the viewport centre — the user
+//     picks which slice of a tall column to read.
+//   • horizontally: if the column fits in the viewport with room to spare
+//     at the new scale, centre on the column's centroid so neighbouring
+//     columns peek in equally on both sides ("show context"). Otherwise
+//     centre on the tap, since the user already picked which part of the
+//     wide column to focus on.
 //   • scales so a glyph of the region's fontSize displays at `targetFontPx`
 //     CSS pixels — same calibration used for setting zoom on pinch end.
-// Centring on the tap (not on a region centre or centroid) means a tap on
-// the top of a column zooms to the top, a tap on the bottom to the bottom,
-// and a tap on a wrap-around line zooms there. Whatever sits next to the
-// tap fills the rest of the viewport — that's the user's "context".
+const CONTEXT_MARGIN_FRAC = 0.05; // need ≥5% viewport on each side to count as "fits"
 export function transformForRegion(region, clientX, clientY, targetFontPx) {
   if (!region || !(region.fontSize > 0) || !(targetFontPx > 0)) return null;
-  const visualScale = (targetFontPx / region.fontSize) / renderScale;
-  // Tap → canvas-CSS coords at the *current* view.scale. Same point, taken
-  // through the new scale, must land at the screen centre.
+  const effScale = targetFontPx / region.fontSize;       // PDF → screen
+  const visualScale = effScale / renderScale;
   const r = canvas.getBoundingClientRect();
-  const localX = (clientX - r.left) / view.scale;
-  const localY = (clientY - r.top)  / view.scale;
+  const tapPdfX = (clientX - r.left) / view.scale / renderScale;
+  const tapPdfY = (clientY - r.top)  / view.scale / renderScale;
+
+  // Column width on screen at the new scale.
+  const colScreenW = (region.bbox?.w ?? 0) * effScale;
+  const fits = colScreenW + 2 * CONTEXT_MARGIN_FRAC * window.innerWidth
+               <= window.innerWidth;
+  const centerXPdf = (fits && region.centroid)
+    ? region.centroid.x
+    : tapPdfX;
+
   return {
-    x: window.innerWidth  / 2 - localX * visualScale,
-    y: window.innerHeight / 2 - localY * visualScale,
+    x: window.innerWidth  / 2 - centerXPdf * effScale,
+    y: window.innerHeight / 2 - tapPdfY    * effScale,
     scale: visualScale,
   };
 }

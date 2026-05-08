@@ -1,50 +1,54 @@
-// User zoom preference per region type (gemara / commentary)
-// Stored as the CSS viewScale the user last settled on for that region type.
+// User zoom preferences per region — keyed by the region's PDF fontSize so
+// the same on-screen reading size carries across pages and masechtos.
 
-const PREFS_KEY = 'talmud:zoom_prefs';
 const LAST_LOC_KEY = 'talmud:last_location';
 const REGION_CACHE_KEY = 'talmud:regions:v14';
 const SESSION_KEY = 'talmud:session:v1';
-const READING_FONT_KEY = 'talmud:reading_font_px';
+const REGION_ZOOM_KEY = 'talmud:region_zoom_px:v1';
 
-// ── Preferred on-screen reading size (in CSS pixels) ──
+// ── Per-fontSize preferred on-screen size (CSS pixels) ──
 //
-// Updated whenever the user finishes a pinch-zoom, based on the font size at
-// the pinch midpoint × the effective scale. Drives smart double-tap zoom:
-// double-tapping on a piece of text scales the page so that text appears at
-// roughly the same on-screen size the user last preferred.
+// Stored as { "<fontSize.toFixed(2)>": preferredPx }. Two regions are
+// considered the same "type" if their fontSizes differ by less than 25%
+// (Gemara ≈ 12pt, Rashi/Tosfos ≈ 9pt, side meforshim ≈ 7pt — those bands
+// are well separated). Saves on pinch end, looks up on double-tap zoom.
 
-export function getReadingFontPx() {
-  try {
-    const raw = localStorage.getItem(READING_FONT_KEY);
-    const n = raw == null ? NaN : parseFloat(raw);
-    return Number.isFinite(n) && n > 0 ? n : null;
-  } catch { return null; }
-}
-
-export function setReadingFontPx(px) {
-  if (!Number.isFinite(px) || px <= 0) return;
-  try { localStorage.setItem(READING_FONT_KEY, String(px)); } catch { /* ignore */ }
-}
-
-function loadPrefs() {
-  try { return JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); }
+function loadRegionZoomMap() {
+  try { return JSON.parse(localStorage.getItem(REGION_ZOOM_KEY) || '{}'); }
   catch { return {}; }
 }
 
-function savePrefs(prefs) {
-  localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+function saveRegionZoomMap(map) {
+  try { localStorage.setItem(REGION_ZOOM_KEY, JSON.stringify(map)); }
+  catch { /* quota — ignore */ }
 }
 
-// regionType: 'gemara' | 'commentary'
-export function getZoomPref(regionType) {
-  return loadPrefs()[regionType] ?? null;
+export function getRegionZoomPx(fontSize) {
+  if (!Number.isFinite(fontSize) || fontSize <= 0) return null;
+  const map = loadRegionZoomMap();
+  let best = null, bestDist = Infinity;
+  for (const k of Object.keys(map)) {
+    const fs = parseFloat(k);
+    if (!Number.isFinite(fs) || fs <= 0) continue;
+    const d = Math.abs(fs - fontSize) / fontSize;
+    if (d < 0.25 && d < bestDist) { bestDist = d; best = map[k]; }
+  }
+  return Number.isFinite(best) && best > 0 ? best : null;
 }
 
-export function setZoomPref(regionType, scale) {
-  const prefs = loadPrefs();
-  prefs[regionType] = scale;
-  savePrefs(prefs);
+export function setRegionZoomPx(fontSize, px) {
+  if (!Number.isFinite(fontSize) || fontSize <= 0) return;
+  if (!Number.isFinite(px) || px <= 0) return;
+  const map = loadRegionZoomMap();
+  // Replace existing entries within 10% similarity so we don't accumulate
+  // many slightly-different fontSize keys for what's really one type.
+  for (const k of Object.keys(map)) {
+    const fs = parseFloat(k);
+    if (!Number.isFinite(fs)) { delete map[k]; continue; }
+    if (Math.abs(fs - fontSize) / fontSize < 0.1) delete map[k];
+  }
+  map[fontSize.toFixed(2)] = px;
+  saveRegionZoomMap(map);
 }
 
 // Last viewed location (legacy — kept for migration)

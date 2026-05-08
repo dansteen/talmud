@@ -51,7 +51,7 @@ let renderScale = 1; // scale at which the canvas was last rendered
 let textBbox = null;
 
 // Per-item rectangles + font size in viewport-coordinate units (y top-down).
-// Used by findItemAtPoint() for smart double-tap zoom.
+// Fed to detectRegions() each time we re-tune detection knobs.
 let textItems = [];
 
 // Region detection result: { regions, labels, gridW, gridH, cellSize } or null
@@ -655,23 +655,30 @@ export function animateTo(targetX, targetY, targetScale, onDone) {
   }, { once: true });
 }
 
-export function transformForRegion(region, preferredScale) {
-  // region coords are normalized [0..1] relative to the canvas at renderScale
-  const regionCssX = region.x * view.cssW;
-  const regionCssY = region.y * view.cssH;
-  const regionCssW = region.w * view.cssW;
-  const regionCssH = region.h * view.cssH;
-
-  const scale = preferredScale ?? (window.innerHeight * 0.9 / regionCssH);
-
-  const cx = regionCssX + regionCssW / 2;
-  const cy = regionCssY + regionCssH / 2;
-
+// Compute a target view transform that:
+//   • centres `region` (bbox in PDF points) in the viewport
+//   • scales so a glyph of the region's fontSize displays at `targetFontPx`
+//     CSS pixels — same calibration used for setting zoom on pinch end.
+// If the region is bigger than the viewport at that scale, we still honour
+// the saved zoom and let the user see "as much as possible" centred.
+export function transformForRegion(region, targetFontPx) {
+  if (!region || !region.bbox || !(region.fontSize > 0)) return null;
+  if (!(targetFontPx > 0)) return null;
+  const desiredEff = targetFontPx / region.fontSize;     // PDF → screen
+  const visualScale = desiredEff / renderScale;
+  const cx = region.bbox.x + region.bbox.w / 2;
+  const cy = region.bbox.y + region.bbox.h / 2;
   return {
-    x: window.innerWidth / 2 - cx * scale,
-    y: window.innerHeight / 2 - cy * scale,
-    scale,
+    x: window.innerWidth  / 2 - cx * desiredEff,
+    y: window.innerHeight / 2 - cy * desiredEff,
+    scale: visualScale,
   };
+}
+
+// Pan by (dx, dy) screen pixels, keep current scale. Used by double-tap
+// scroll within the focused region.
+export function transformForScroll(dx, dy) {
+  return { x: view.x + dx, y: view.y + dy, scale: view.scale };
 }
 
 export function transformForHome() {
@@ -719,69 +726,6 @@ export function findRegionAtPoint(clientX, clientY) {
   const lbl = labels[cy * gridW + cx];
   if (lbl === 0) return null;
   return regs.find(r => r.id === lbl) ?? null;
-}
-
-// Find the text item whose rect is closest (in screen pixels) to the screen
-// point. Returns null if no item is within `radiusPx` screen pixels.
-export function findItemAtPoint(clientX, clientY, radiusPx = 30) {
-  if (!textItems.length) return null;
-  const { x: px, y: py } = screenToPdf(clientX, clientY);
-  const eff = effectiveScale();
-  if (eff <= 0) return null;
-  const radiusPdf = radiusPx / eff;
-
-  let best = null;
-  let bestDist = Infinity;
-  for (const item of textItems) {
-    // Distance from point to item's AABB (0 if inside).
-    const dx = Math.max(item.x - px, 0, px - (item.x + item.w));
-    const dy = Math.max(item.y - py, 0, py - (item.y + item.h));
-    const d = Math.hypot(dx, dy);
-    if (d <= radiusPdf && d < bestDist) {
-      bestDist = d;
-      best = item;
-    }
-  }
-  return best;
-}
-
-// Compute a target view transform that:
-//   1. zooms so a piece of text of `fontSizePdf` PDF-units appears at
-//      `targetFontPx` CSS pixels on screen, and
-//   2. places the screen point (clientX, clientY) at the viewport center.
-// constrainView() will pull the result inside the view bbox if the centering
-// would otherwise push beyond it — so edges keep their margin visible.
-export function transformForFontSize(clientX, clientY, fontSizePdf, targetFontPx) {
-  if (!fontSizePdf || fontSizePdf <= 0) return null;
-  const targetEff = targetFontPx / fontSizePdf;       // PDF → screen pixels
-  const targetViewScale = targetEff / renderScale;     // applied via CSS transform
-
-  // Convert tap to canvas-CSS coords at the *current* view.scale, then choose
-  // view.x/y so that same canvas-CSS point ends up at the screen center after
-  // applying targetViewScale.
-  const r = canvas.getBoundingClientRect();
-  const localX = (clientX - r.left) / view.scale;
-  const localY = (clientY - r.top)  / view.scale;
-
-  return {
-    x: window.innerWidth  / 2 - localX * targetViewScale,
-    y: window.innerHeight / 2 - localY * targetViewScale,
-    scale: targetViewScale,
-  };
-}
-
-// Compute a target view transform that keeps the current scale and shifts so
-// the screen point (clientX, clientY) ends up at viewport center. Used by
-// double-tap "scroll" — same font size as current zoom, just re-center.
-export function transformForCentering(clientX, clientY) {
-  const r = canvas.getBoundingClientRect();
-  const localX = (clientX - r.left) / view.scale;
-  const localY = (clientY - r.top)  / view.scale;
-  return {
-    x: window.innerWidth  / 2 - localX * view.scale,
-    y: window.innerHeight / 2 - localY * view.scale,
-    scale: view.scale,
-  };
 }
 
 export function applyDelta(dx, dy, dScale, originX, originY) {

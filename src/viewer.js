@@ -409,12 +409,15 @@ function recomputeRegions(opts) {
 // is always more useful than collapsing the page into one region.
 
 const TUNING_ATTEMPTS = [
-  null,                                          // 1: defaults from URL / regionOpts
-  { closeRadiusY: 3 },                            // 2: mild vertical merging
-  { closeRadiusY: 6 },                            // 3: more vertical merging
-  { closeRadiusY: 10 },                           // 4: aggressive vertical merging
-  { closeRadiusYSide: 0 },                        // 5: drop side-band closing (separates side meforshim from gemara when side closing was bridging them)
-  { closeRadiusY: 0, closeRadiusYSide: 0 },       // 6: drop all closing
+  null,                                          // 1: defaults from URL / regionOpts (Y=0, YSide=5)
+  { closeRadiusY: 1 },                            // 2: minimal Y bump
+  { closeRadiusY: 2 },                            // 3: small Y bump
+  { closeRadiusY: 3 },                            // 4: medium Y bump
+  { closeRadiusY: 6 },                            // 5: bigger Y bump
+  { closeRadiusY: 10 },                           // 6: aggressive Y bump
+  { closeRadiusYSide: 4 },                        // 7: small YSide reduction (some pages over-merge sides at default 5)
+  { closeRadiusYSide: 0 },                        // 8: drop side-band closing (separates side meforshim from gemara when side closing was bridging them)
+  { closeRadiusY: 0, closeRadiusYSide: 0 },       // 9: drop all closing
 ];
 
 // Extra attempts run only when the basic ladder shows side-over-segmentation

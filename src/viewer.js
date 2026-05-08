@@ -51,8 +51,27 @@ let renderScale = 1; // scale at which the canvas was last rendered
 let textBbox = null;
 
 // Per-item rectangles + font size in viewport-coordinate units (y top-down).
-// Fed to detectRegions() each time we re-tune detection knobs.
+// `textItems` is the full set used for hit-testing (findItemAtPoint, etc).
+// `detectionItems` is a filtered subset fed to detectRegions — see
+// filterDetectionItems for what gets dropped and why.
 let textItems = [];
+let detectionItems = [];
+
+// Drop items that are useless (or harmful) for region detection:
+//   - whitespace-only items (e.g., wide spaces used as visual padding;
+//     PDFs sometimes encode these as horizontal bridges that span columns)
+//   - items whose bbox is wider than half the page — typically bottom
+//     L-shape commentary lines whose internal letter-spacing makes them
+//     visually look like separate columns but whose bbox is one wide
+//     rectangle bridging gemara→meforshim.
+// Hit-testing keeps the full textItems list, so a tap on filtered text
+// still finds something (or falls through to the no-region path naturally).
+function filterDetectionItems(items) {
+  const wideMax = pageW * 0.50;
+  return items.filter(it =>
+    it.str && it.str.trim() && it.w <= wideMax
+  );
+}
 
 // Region detection result: { regions, labels, gridW, gridH, cellSize } or null
 // before any page has loaded. The labeled grid drives O(1) hit-testing.
@@ -341,6 +360,7 @@ export async function loadPage(url, savedViewState = null) {
   textItems = data.items;
   textBbox = data.textBbox;
   pageIsPerekEnd = data.perekEnd;
+  detectionItems = filterDetectionItems(textItems);
 
   // Detect regions from the per-item rects: low-res occupancy grid,
   // morphological closing, connected components. The auto-tuner sweeps a
@@ -379,7 +399,7 @@ function recomputeRegions(opts) {
     drawRegionOverlay();
     return;
   }
-  regionsData = detectRegions(textItems, pageW, pageH, regionOpts);
+  regionsData = detectRegions(detectionItems, pageW, pageH, regionOpts);
   regions = regionsData.regions;
   // Manual tuning via slider — the auto-tune diagnostics from page-load are
   // now stale, but we leave them in place so the user can still see what was
@@ -474,7 +494,7 @@ function autoTuneAndApply(baseOpts) {
     const adj = TUNING_ATTEMPTS[i];
     const opts = adj === null ? { ...regionOpts, ...baseOpts }
                               : { ...regionOpts, ...baseOpts, ...adj };
-    const data = detectRegions(textItems, pageW, pageH, opts);
+    const data = detectRegions(detectionItems, pageW, pageH, opts);
     const sig = countSignificantRegions(data.regions);
     const overmerged = isOvermerged(data.regions);
     tries.push({ opts, data, sig, overmerged, idx: i });

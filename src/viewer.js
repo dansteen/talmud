@@ -737,8 +737,13 @@ function screenToPdf(clientX, clientY) {
   };
 }
 
-// Look up the region under a screen point via the labeled grid.
-// Returns the region object (with bbox + fontSize + …) or null for whitespace.
+// Look up the region under a screen point via the labeled grid. If the
+// tap lands directly on a labelled cell, return that region. Otherwise
+// expand outward and snap to the nearest labelled cell within
+// HIT_LEEWAY_CELLS — covers inter-line whitespace inside a column so a
+// tap between two glyphs of Gemara still counts as a Gemara tap. Cells
+// beyond that radius keep returning null (treated as whitespace).
+const HIT_LEEWAY_CELLS = 8;
 export function findRegionAtPoint(clientX, clientY) {
   if (!regionsData) return null;
   const { x: px, y: py } = screenToPdf(clientX, clientY);
@@ -746,7 +751,25 @@ export function findRegionAtPoint(clientX, clientY) {
   const cx = Math.floor(px / cellSize);
   const cy = Math.floor(py / cellSize);
   if (cx < 0 || cy < 0 || cx >= gridW || cy >= gridH) return null;
-  const lbl = labels[cy * gridW + cx];
+
+  let lbl = labels[cy * gridW + cx];
+  if (lbl === 0) {
+    let bestD2 = Infinity;
+    const r = HIT_LEEWAY_CELLS;
+    const x0 = Math.max(0, cx - r), x1 = Math.min(gridW - 1, cx + r);
+    const y0 = Math.max(0, cy - r), y1 = Math.min(gridH - 1, cy + r);
+    for (let yy = y0; yy <= y1; yy++) {
+      const row = yy * gridW;
+      const dy = yy - cy;
+      for (let xx = x0; xx <= x1; xx++) {
+        const l = labels[row + xx];
+        if (l === 0) continue;
+        const dx = xx - cx;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) { bestD2 = d2; lbl = l; }
+      }
+    }
+  }
   if (lbl === 0) return null;
   return regs.find(r => r.id === lbl) ?? null;
 }

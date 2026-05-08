@@ -379,12 +379,20 @@ function recomputeRegions(opts) {
     drawRegionOverlay();
     return;
   }
+  if (DEBUG_REGIONS) {
+    // eslint-disable-next-line no-console
+    console.log('[recomputeRegions] opts=', JSON.stringify(regionOpts),
+      'pageW=', pageW, 'pageH=', pageH, 'items=', textItems.length);
+  }
   regionsData = detectRegions(textItems, pageW, pageH, regionOpts);
   regions = regionsData.regions;
-  // Manual tuning via slider — the auto-tune diagnostics from page-load are
-  // now stale, but we leave them in place so the user can still see what was
-  // tried before they took over.
-  if (DEBUG_REGIONS) updateDebugPanelStatus();
+  if (DEBUG_REGIONS) {
+    // eslint-disable-next-line no-console
+    console.log('[recomputeRegions] result regions=', regions.length,
+      'sig=', countSignificantRegions(regions),
+      'overmerged=', isOvermerged(regions));
+    updateDebugPanelStatus();
+  }
   drawRegionOverlay();
 }
 
@@ -474,9 +482,19 @@ function autoTuneAndApply(baseOpts) {
     const adj = TUNING_ATTEMPTS[i];
     const opts = adj === null ? { ...regionOpts, ...baseOpts }
                               : { ...regionOpts, ...baseOpts, ...adj };
+    if (DEBUG_REGIONS) {
+      // eslint-disable-next-line no-console
+      console.log(`[autoTune attempt ${i+1}] opts=`, JSON.stringify(opts),
+        'pageW=', pageW, 'pageH=', pageH, 'items=', textItems.length);
+    }
     const data = detectRegions(textItems, pageW, pageH, opts);
     const sig = countSignificantRegions(data.regions);
     const overmerged = isOvermerged(data.regions);
+    if (DEBUG_REGIONS) {
+      // eslint-disable-next-line no-console
+      console.log(`[autoTune attempt ${i+1}] result regions=`, data.regions.length,
+        'sig=', sig, 'overmerged=', overmerged);
+    }
     tries.push({ opts, data, sig, overmerged, idx: i });
     // Early exit only on a "clean" hit — exact target AND no overmerged region.
     if (sig === target && !overmerged) {
@@ -518,17 +536,8 @@ function autoTuneAndApply(baseOpts) {
   }
 
   regionOpts = { ...regionOpts, ...chosen.opts };
-  // Re-run detection with the merged regionOpts instead of using
-  // chosen.data directly. The result is identical in the deterministic
-  // case but guarantees the rendered state goes through the same code
-  // path a slider movement would, so a slider toggle that returns to
-  // the same value can never produce different regions.
-  if (chosen.status === 'fallback-single') {
-    regionsData = chosen.data;
-  } else {
-    regionsData = detectRegions(textItems, pageW, pageH, regionOpts);
-  }
-  regions = regionsData.regions;
+  regionsData = chosen.data;
+  regions = chosen.data.regions;
   lastTuneInfo = {
     status: chosen.status,
     attempts: chosen.attempts,

@@ -864,12 +864,13 @@ function drawRegionOverlay() {
   mctx.putImageData(img, 0, 0);
   overlay.appendChild(mask);
 
-  // Optional: draw the cell grid as a CSS-only overlay. Each tile is
-  // cellSize/pageW × cellSize/pageH of the overlay; the linear-gradient
-  // pattern paints the top and left 1px of every tile.
+  // Optional: draw the cell grid as a CSS-only overlay. The canvas above
+  // is gridW × gridH tiles stretched to the overlay, so each tile is
+  // 100/gridW × 100/gridH of the overlay — matching the canvas grid
+  // exactly even when pageW isn't an integer multiple of cellSize.
   if (overlayDisplay.cells) {
-    const tileW = (cellSize / pageW * 100);
-    const tileH = (cellSize / pageH * 100);
+    const tileW = 100 / gridW;
+    const tileH = 100 / gridH;
     const gridDiv = document.createElement('div');
     gridDiv.style.cssText =
       'position:absolute;inset:0;pointer-events:none;' +

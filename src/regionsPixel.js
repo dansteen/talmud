@@ -79,18 +79,34 @@ export async function buildPixelGridFromPdfPage(pdfPage, cellSize = 1.5) {
 export function detectGutters(grid, gridW, gridH, opts = {}) {
   const thickness = opts.thickness ?? 4;
 
-  // Empty mask: 1 where the page is empty, 0 where there's ink.
+  // Step 1: solidify the text mask. At our cell resolution, individual
+  // Hebrew letters have lots of negative space inside them (between
+  // strokes), so a raw text column reads as ~30% occupied cells, not
+  // a solid mass. A small fixed closing on the text mask fills those
+  // sub-letter and inter-glyph gaps so a column reads as solid before
+  // we look for gutters around it.
+  const PRE_SOLIDIFY_R = 3;
+  const textSolid = morphClose(grid, gridW, gridH, PRE_SOLIDIFY_R);
+
+  // Step 2: invert to get the empty mask.
   const empty = new Uint8Array(gridW * gridH);
   for (let i = 0; i < grid.length; i++) {
-    empty[i] = grid[i] ? 0 : 1;
+    empty[i] = textSolid[i] ? 0 : 1;
   }
-
   if (thickness <= 0) return empty;
 
-  // Closing of empty mask = dilate then erode (separable square SE).
-  let m = dilateSquare(empty, gridW, gridH, thickness);
-  m = erodeSquare(m, gridW, gridH, thickness);
-  return m;
+  // Step 3: close the empty mask by `thickness`. This absorbs small
+  // isolated text intrusions (single words dipping into a gutter,
+  // marginal marks) into the surrounding gutter, while leaving solid
+  // text columns intact since they're wider than 2*thickness on every
+  // side.
+  return morphClose(empty, gridW, gridH, thickness);
+}
+
+function morphClose(mask, gridW, gridH, r) {
+  if (r <= 0) return new Uint8Array(mask);
+  const dil = dilateSquare(mask, gridW, gridH, r);
+  return erodeSquare(dil, gridW, gridH, r);
 }
 
 // Square structuring element of radius `r`, separated into X then Y passes.

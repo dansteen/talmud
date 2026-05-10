@@ -1,20 +1,25 @@
-// Pixel-grid construction + 2D gutter detection.
+// Pixel-grid construction + 2D gutter detection via connected components.
 //
-// Render the PDF page to an offscreen canvas at scale 1 (1 PDF point = 1 px),
-// binarize the bitmap, downsample into a cell grid. From there we compute
-// "gutters" — every cell that has no text (or only an isolated bit of
-// text) within a thickness-sized neighborhood is gutter.
+// Each cell is `cellSize` PDF points square (caller decides the size; the
+// natural choice for talmud pages is the page's smallest font, so a glyph
+// of the smallest text occupies roughly 1 cell). A cell is "occupied" if
+// any pixel inside its area is dark.
+//
+// Gutters are connected components of EMPTY cells (4-neighbor adjacency)
+// whose bounding-box dimensions satisfy a min/max threshold: the shorter
+// side ≥ minShort cells AND the longer side ≥ minLong cells. With the
+// natural cellSize this picks out real gutters (tall narrow inter-column
+// stripes, wide short inter-paragraph bands) while ignoring tiny
+// connected-empties inside text (sub-letter holes, inter-letter gaps).
 
 // ── Pixel-grid construction ─────────────────────────────────────────────
 
-export async function buildPixelGridFromPdfPage(pdfPage, cellSize = 1.5) {
+export async function buildPixelGridFromPdfPage(pdfPage, cellSize) {
   const viewport = pdfPage.getViewport({ scale: 1 });
   const canvas = document.createElement('canvas');
   canvas.width = Math.ceil(viewport.width);
   canvas.height = Math.ceil(viewport.height);
   const ctx = canvas.getContext('2d');
-  // PDF.js renders on transparent — fill white so unrendered area is clean
-  // background, not transparent black.
   ctx.fillStyle = 'white';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   await pdfPage.render({ canvasContext: ctx, viewport }).promise;
@@ -27,8 +32,7 @@ export async function buildPixelGridFromPdfPage(pdfPage, cellSize = 1.5) {
   const gridH = Math.max(1, Math.ceil(imgH / cellSize));
   const grid = new Uint8Array(gridW * gridH);
 
-  // Threshold tuned for printed talmud pages: anything with luminance below
-  // 200 (out of 255) counts as ink.
+  // Threshold: anything with luminance below 200 (out of 255) counts as ink.
   const threshold = 200;
 
   for (let cy = 0; cy < gridH; cy++) {
@@ -64,198 +68,75 @@ export async function buildPixelGridFromPdfPage(pdfPage, cellSize = 1.5) {
 }
 
 // ── 2D gutter detection ─────────────────────────────────────────────────
-//
-// A cell is "gutter" if it has no text in it OR if the text in it is an
-// isolated intrusion small enough that the surrounding empty space
-// engulfs it. We compute this via morphological closing of the
-// empty-cell mask: dilate by `thickness` (so empty cells expand into
-// adjacent text), then erode by `thickness` (so they shrink back).
-// The net effect is that small isolated text features (single words,
-// stray marks) get absorbed into the surrounding empty area, while
-// large text columns retain their boundaries.
-//
-// Returns a Uint8Array (gridW × gridH) where 1 = gutter, 0 = text.
-
-// A cell is part of a gutter iff it sits inside an unbroken run of empty
-// cells (horizontal or vertical) at least `minLength` cells long. This
-// matches the user's intuition: "a gutter is a large contiguous set of
-// whitespace; an inter-word gap is not." Long runs catch full-page-width
-// horizontal gutters AND tall narrow vertical inter-column gutters
-// regardless of how narrow they are; short runs (sub-letter, inter-letter,
-// inter-word) never qualify no matter how many of them sit next to each
-// other.
-//
-// Pre-step: close the empty mask vertically by a small radius so a single
-// word dipping down into a tall gutter still counts as gutter. The word's
-// cells are surrounded by empty above and below; vertical closing fills
-// them. Sub-letter empties (small 1-areas surrounded by text) are
-// untouched by closing of the empty mask, so this doesn't bleed into
-// columns.
 
 export function detectGutters(grid, gridW, gridH, opts = {}) {
-  const minLength = opts.thickness ?? 20;
-  const wordAbsorbY = 4;
+  const minShort = opts.minShort ?? 2;
+  const minLong  = opts.minLong  ?? 10;
 
-  // Empty mask: 1 where the page is empty, 0 where there's ink.
-  const empty = new Uint8Array(gridW * gridH);
-  for (let i = 0; i < grid.length; i++) {
-    empty[i] = grid[i] ? 0 : 1;
-  }
+  // 4-neighbor flood-fill labelling of empty cells. Each empty cell gets
+  // a component id; we track each component's bbox as we go.
+  const labels = new Int32Array(gridW * gridH);
+  const compBBox = []; // index = id - 1; { xMin, xMax, yMin, yMax }
+  let nextId = 0;
+  const stack = [];
 
-  // Vertical closing of the empty mask absorbs small text intrusions
-  // (single words dipping into a gutter) into the surrounding empty
-  // space, so the run-detection below sees them as part of the gutter.
-  let mask = empty;
-  if (wordAbsorbY > 0) {
-    mask = dilateY(mask, gridW, gridH, wordAbsorbY);
-    mask = erodeY (mask, gridW, gridH, wordAbsorbY);
-  }
-
-  if (minLength <= 0) return mask;
-
-  // Output mask: cell = 1 iff it's inside any horizontal OR vertical
-  // empty run of length >= minLength.
-  const out = new Uint8Array(gridW * gridH);
-
-  // Horizontal runs.
   for (let y = 0; y < gridH; y++) {
-    const base = y * gridW;
-    let runStart = -1;
     for (let x = 0; x < gridW; x++) {
-      if (mask[base + x]) {
-        if (runStart < 0) runStart = x;
-      } else if (runStart >= 0) {
-        if (x - runStart >= minLength) {
-          for (let xx = runStart; xx < x; xx++) out[base + xx] = 1;
-        }
-        runStart = -1;
+      const seed = y * gridW + x;
+      if (grid[seed] !== 0 || labels[seed] !== 0) continue;
+      nextId++;
+      const id = nextId;
+      let xMin = x, xMax = x, yMin = y, yMax = y;
+
+      stack.length = 0;
+      stack.push(seed);
+      while (stack.length) {
+        const i = stack.pop();
+        if (labels[i] !== 0 || grid[i] !== 0) continue;
+        labels[i] = id;
+        const cx = i % gridW;
+        const cy = (i - cx) / gridW;
+        if (cx < xMin) xMin = cx;
+        if (cx > xMax) xMax = cx;
+        if (cy < yMin) yMin = cy;
+        if (cy > yMax) yMax = cy;
+        if (cx > 0)         stack.push(i - 1);
+        if (cx < gridW - 1) stack.push(i + 1);
+        if (cy > 0)         stack.push(i - gridW);
+        if (cy < gridH - 1) stack.push(i + gridW);
       }
-    }
-    if (runStart >= 0 && gridW - runStart >= minLength) {
-      for (let xx = runStart; xx < gridW; xx++) out[base + xx] = 1;
+      compBBox.push({ xMin, xMax, yMin, yMax });
     }
   }
 
-  // Vertical runs.
-  for (let x = 0; x < gridW; x++) {
-    let runStart = -1;
-    for (let y = 0; y < gridH; y++) {
-      if (mask[y * gridW + x]) {
-        if (runStart < 0) runStart = y;
-      } else if (runStart >= 0) {
-        if (y - runStart >= minLength) {
-          for (let yy = runStart; yy < y; yy++) out[yy * gridW + x] = 1;
-        }
-        runStart = -1;
-      }
-    }
-    if (runStart >= 0 && gridH - runStart >= minLength) {
-      for (let yy = runStart; yy < gridH; yy++) out[yy * gridW + x] = 1;
-    }
+  // Each component qualifies as a gutter iff its bbox shorter side ≥
+  // minShort AND its longer side ≥ minLong.
+  const isGutter = new Uint8Array(nextId + 1); // index = id, id 0 = unused
+  for (let id = 1; id <= nextId; id++) {
+    const b = compBBox[id - 1];
+    const w = b.xMax - b.xMin + 1;
+    const h = b.yMax - b.yMin + 1;
+    const lo = Math.min(w, h);
+    const hi = Math.max(w, h);
+    if (lo >= minShort && hi >= minLong) isGutter[id] = 1;
   }
 
-  return out;
-}
-
-// 1-D dilation/erosion along Y only.
-function dilateY(grid, gridW, gridH, r) {
-  if (r <= 0) return new Uint8Array(grid);
+  // Build output mask: 1 where cell is in a qualifying component.
   const out = new Uint8Array(gridW * gridH);
-  for (let x = 0; x < gridW; x++) {
-    for (let y = 0; y < gridH; y++) {
-      let any = false;
-      const lo = Math.max(0, y - r), hi = Math.min(gridH - 1, y + r);
-      for (let yy = lo; yy <= hi; yy++) {
-        if (grid[yy * gridW + x]) { any = true; break; }
-      }
-      if (any) out[y * gridW + x] = 1;
-    }
+  for (let i = 0; i < labels.length; i++) {
+    if (isGutter[labels[i]]) out[i] = 1;
   }
   return out;
 }
 
-function erodeY(grid, gridW, gridH, r) {
-  if (r <= 0) return new Uint8Array(grid);
-  const out = new Uint8Array(gridW * gridH);
-  for (let x = 0; x < gridW; x++) {
-    for (let y = 0; y < gridH; y++) {
-      const lo = y - r, hi = y + r;
-      if (lo < 0 || hi >= gridH) continue;
-      let all = true;
-      for (let yy = lo; yy <= hi; yy++) {
-        if (!grid[yy * gridW + x]) { all = false; break; }
-      }
-      if (all) out[y * gridW + x] = 1;
-    }
+// Pick a cellSize from the page's text items: the smallest fontSize. We
+// floor it so cellSize is at least 1pt (avoids degenerate grids if the
+// page has no text or has unusable item heights).
+export function smallestFontCellSize(textItems) {
+  let min = Infinity;
+  for (const it of textItems) {
+    if (it.fontSize > 0 && it.fontSize < min) min = it.fontSize;
   }
-  return out;
-}
-
-// Square structuring element of radius `r`, separated into X then Y passes.
-function dilateSquare(grid, gridW, gridH, r) {
-  const tmp = new Uint8Array(gridW * gridH);
-  // X pass.
-  for (let y = 0; y < gridH; y++) {
-    const base = y * gridW;
-    for (let x = 0; x < gridW; x++) {
-      let any = false;
-      const xLo = Math.max(0, x - r);
-      const xHi = Math.min(gridW - 1, x + r);
-      for (let xx = xLo; xx <= xHi; xx++) {
-        if (grid[base + xx]) { any = true; break; }
-      }
-      if (any) tmp[base + x] = 1;
-    }
-  }
-  // Y pass.
-  const out = new Uint8Array(gridW * gridH);
-  for (let x = 0; x < gridW; x++) {
-    for (let y = 0; y < gridH; y++) {
-      let any = false;
-      const yLo = Math.max(0, y - r);
-      const yHi = Math.min(gridH - 1, y + r);
-      for (let yy = yLo; yy <= yHi; yy++) {
-        if (tmp[yy * gridW + x]) { any = true; break; }
-      }
-      if (any) out[y * gridW + x] = 1;
-    }
-  }
-  return out;
-}
-
-function erodeSquare(grid, gridW, gridH, r) {
-  const tmp = new Uint8Array(gridW * gridH);
-  // X pass.
-  for (let y = 0; y < gridH; y++) {
-    const base = y * gridW;
-    for (let x = 0; x < gridW; x++) {
-      let all = true;
-      const xLo = x - r;
-      const xHi = x + r;
-      if (xLo < 0 || xHi >= gridW) { all = false; }
-      else {
-        for (let xx = xLo; xx <= xHi; xx++) {
-          if (!grid[base + xx]) { all = false; break; }
-        }
-      }
-      if (all) tmp[base + x] = 1;
-    }
-  }
-  // Y pass.
-  const out = new Uint8Array(gridW * gridH);
-  for (let x = 0; x < gridW; x++) {
-    for (let y = 0; y < gridH; y++) {
-      let all = true;
-      const yLo = y - r;
-      const yHi = y + r;
-      if (yLo < 0 || yHi >= gridH) { all = false; }
-      else {
-        for (let yy = yLo; yy <= yHi; yy++) {
-          if (!tmp[yy * gridW + x]) { all = false; break; }
-        }
-      }
-      if (all) out[y * gridW + x] = 1;
-    }
-  }
-  return out;
+  if (!isFinite(min) || min < 1) return 1.5;
+  return min;
 }

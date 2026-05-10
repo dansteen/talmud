@@ -1,7 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { detectRegions } from './regions.js';
-import { buildPixelGridFromPdfPage, detectGutters } from './regionsPixel.js';
+import { buildPixelGridFromPdfPage, detectGutters, smallestFontCellSize } from './regionsPixel.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -354,7 +354,11 @@ export async function loadPage(url, savedViewState = null) {
   // ladder, no target count, and no font-name guessing. textItems are
   // still passed in so each region can be labeled with median fontSize
   // and item count.
-  pixelGridData = await buildPixelGridFromPdfPage(currentPdfPage);
+  // Use the smallest font on the page as cellSize: at this scale a glyph
+  // of the smallest text is roughly 1 cell, so ink fills cells densely
+  // and within-letter holes don't appear as empty cells.
+  const cellSize = smallestFontCellSize(textItems);
+  pixelGridData = await buildPixelGridFromPdfPage(currentPdfPage, cellSize);
   applyPixelDetection(regionTuneFromUrl());
 
   // If we have a saved zoom/center for this page, render at that scale and
@@ -613,7 +617,8 @@ function autoTuneAndApply(baseOpts) {
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'gutterThickness',   label: 'gutterMinLength',   min: 0, max: 700,  step: 1,      def: 20 },
+  { key: 'minShort',  label: 'minShort',  min: 1, max: 20,   step: 1,  def: 2 },
+  { key: 'minLong',   label: 'minLong',   min: 1, max: 200,  step: 1,  def: 10 },
 ];
 
 let panelStatusEl = null;
@@ -819,8 +824,9 @@ function drawRegionOverlay() {
   if (!pixelGridData) return;
 
   const { grid, gridW, gridH } = pixelGridData;
-  const thickness = regionOpts.gutterThickness ?? 4;
-  const gutterMask = detectGutters(grid, gridW, gridH, { thickness });
+  const minShort = regionOpts.minShort ?? 2;
+  const minLong  = regionOpts.minLong  ?? 10;
+  const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong });
 
   // Paint gutter cells onto an offscreen canvas at grid resolution, then
   // scale up via CSS. image-rendering:pixelated keeps cell edges crisp.

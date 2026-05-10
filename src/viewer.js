@@ -617,8 +617,8 @@ function autoTuneAndApply(baseOpts) {
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'minShort',  label: 'minShort',  min: 1, max: 20,   step: 1,  def: 1 },
-  { key: 'minLong',   label: 'minLong',   min: 1, max: 200,  step: 1,  def: 10 },
+  { key: 'minShort',  label: 'minShort',  min: 0, max: 20,   step: 0.5,  def: 1 },
+  { key: 'minLong',   label: 'minLong',   min: 0, max: 200,  step: 0.5,  def: 10 },
 ];
 
 let panelStatusEl = null;

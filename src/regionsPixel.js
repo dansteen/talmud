@@ -76,37 +76,119 @@ export async function buildPixelGridFromPdfPage(pdfPage, cellSize = 1.5) {
 //
 // Returns a Uint8Array (gridW × gridH) where 1 = gutter, 0 = text.
 
+// A cell is part of a gutter iff it sits inside an unbroken run of empty
+// cells (horizontal or vertical) at least `minLength` cells long. This
+// matches the user's intuition: "a gutter is a large contiguous set of
+// whitespace; an inter-word gap is not." Long runs catch full-page-width
+// horizontal gutters AND tall narrow vertical inter-column gutters
+// regardless of how narrow they are; short runs (sub-letter, inter-letter,
+// inter-word) never qualify no matter how many of them sit next to each
+// other.
+//
+// Pre-step: close the empty mask vertically by a small radius so a single
+// word dipping down into a tall gutter still counts as gutter. The word's
+// cells are surrounded by empty above and below; vertical closing fills
+// them. Sub-letter empties (small 1-areas surrounded by text) are
+// untouched by closing of the empty mask, so this doesn't bleed into
+// columns.
+
 export function detectGutters(grid, gridW, gridH, opts = {}) {
-  const thickness = opts.thickness ?? 4;
+  const minLength = opts.thickness ?? 20;
+  const wordAbsorbY = 4;
 
-  // Step 1: solidify the text mask. At our cell resolution, individual
-  // Hebrew letters have lots of negative space inside them (between
-  // strokes), so a raw text column reads as ~30% occupied cells, not
-  // a solid mass. A small fixed closing on the text mask fills those
-  // sub-letter and inter-glyph gaps so a column reads as solid before
-  // we look for gutters around it.
-  const PRE_SOLIDIFY_R = 3;
-  const textSolid = morphClose(grid, gridW, gridH, PRE_SOLIDIFY_R);
-
-  // Step 2: invert to get the empty mask.
+  // Empty mask: 1 where the page is empty, 0 where there's ink.
   const empty = new Uint8Array(gridW * gridH);
   for (let i = 0; i < grid.length; i++) {
-    empty[i] = textSolid[i] ? 0 : 1;
+    empty[i] = grid[i] ? 0 : 1;
   }
-  if (thickness <= 0) return empty;
 
-  // Step 3: close the empty mask by `thickness`. This absorbs small
-  // isolated text intrusions (single words dipping into a gutter,
-  // marginal marks) into the surrounding gutter, while leaving solid
-  // text columns intact since they're wider than 2*thickness on every
-  // side.
-  return morphClose(empty, gridW, gridH, thickness);
+  // Vertical closing of the empty mask absorbs small text intrusions
+  // (single words dipping into a gutter) into the surrounding empty
+  // space, so the run-detection below sees them as part of the gutter.
+  let mask = empty;
+  if (wordAbsorbY > 0) {
+    mask = dilateY(mask, gridW, gridH, wordAbsorbY);
+    mask = erodeY (mask, gridW, gridH, wordAbsorbY);
+  }
+
+  if (minLength <= 0) return mask;
+
+  // Output mask: cell = 1 iff it's inside any horizontal OR vertical
+  // empty run of length >= minLength.
+  const out = new Uint8Array(gridW * gridH);
+
+  // Horizontal runs.
+  for (let y = 0; y < gridH; y++) {
+    const base = y * gridW;
+    let runStart = -1;
+    for (let x = 0; x < gridW; x++) {
+      if (mask[base + x]) {
+        if (runStart < 0) runStart = x;
+      } else if (runStart >= 0) {
+        if (x - runStart >= minLength) {
+          for (let xx = runStart; xx < x; xx++) out[base + xx] = 1;
+        }
+        runStart = -1;
+      }
+    }
+    if (runStart >= 0 && gridW - runStart >= minLength) {
+      for (let xx = runStart; xx < gridW; xx++) out[base + xx] = 1;
+    }
+  }
+
+  // Vertical runs.
+  for (let x = 0; x < gridW; x++) {
+    let runStart = -1;
+    for (let y = 0; y < gridH; y++) {
+      if (mask[y * gridW + x]) {
+        if (runStart < 0) runStart = y;
+      } else if (runStart >= 0) {
+        if (y - runStart >= minLength) {
+          for (let yy = runStart; yy < y; yy++) out[yy * gridW + x] = 1;
+        }
+        runStart = -1;
+      }
+    }
+    if (runStart >= 0 && gridH - runStart >= minLength) {
+      for (let yy = runStart; yy < gridH; yy++) out[yy * gridW + x] = 1;
+    }
+  }
+
+  return out;
 }
 
-function morphClose(mask, gridW, gridH, r) {
-  if (r <= 0) return new Uint8Array(mask);
-  const dil = dilateSquare(mask, gridW, gridH, r);
-  return erodeSquare(dil, gridW, gridH, r);
+// 1-D dilation/erosion along Y only.
+function dilateY(grid, gridW, gridH, r) {
+  if (r <= 0) return new Uint8Array(grid);
+  const out = new Uint8Array(gridW * gridH);
+  for (let x = 0; x < gridW; x++) {
+    for (let y = 0; y < gridH; y++) {
+      let any = false;
+      const lo = Math.max(0, y - r), hi = Math.min(gridH - 1, y + r);
+      for (let yy = lo; yy <= hi; yy++) {
+        if (grid[yy * gridW + x]) { any = true; break; }
+      }
+      if (any) out[y * gridW + x] = 1;
+    }
+  }
+  return out;
+}
+
+function erodeY(grid, gridW, gridH, r) {
+  if (r <= 0) return new Uint8Array(grid);
+  const out = new Uint8Array(gridW * gridH);
+  for (let x = 0; x < gridW; x++) {
+    for (let y = 0; y < gridH; y++) {
+      const lo = y - r, hi = y + r;
+      if (lo < 0 || hi >= gridH) continue;
+      let all = true;
+      for (let yy = lo; yy <= hi; yy++) {
+        if (!grid[yy * gridW + x]) { all = false; break; }
+      }
+      if (all) out[y * gridW + x] = 1;
+    }
+  }
+  return out;
 }
 
 // Square structuring element of radius `r`, separated into X then Y passes.

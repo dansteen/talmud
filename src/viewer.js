@@ -613,7 +613,7 @@ function autoTuneAndApply(baseOpts) {
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'gutterThickness',   label: 'gutterThickness',   min: 0, max: 30,   step: 1,      def: 4 },
+  { key: 'gutterThickness',   label: 'gutterMinLength',   min: 0, max: 200,  step: 1,      def: 20 },
 ];
 
 let panelStatusEl = null;

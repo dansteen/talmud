@@ -617,7 +617,7 @@ function autoTuneAndApply(baseOpts) {
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'minShort',  label: 'minShort',  min: 1, max: 20,   step: 1,  def: 2 },
+  { key: 'minShort',  label: 'minShort',  min: 1, max: 20,   step: 1,  def: 1 },
   { key: 'minLong',   label: 'minLong',   min: 1, max: 200,  step: 1,  def: 10 },
 ];
 
@@ -824,7 +824,7 @@ function drawRegionOverlay() {
   if (!pixelGridData) return;
 
   const { grid, gridW, gridH } = pixelGridData;
-  const minShort = regionOpts.minShort ?? 2;
+  const minShort = regionOpts.minShort ?? 1;
   const minLong  = regionOpts.minLong  ?? 10;
   const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong });
 

@@ -70,7 +70,7 @@ export async function buildPixelGridFromPdfPage(pdfPage, cellSize) {
 // ── 2D gutter detection ─────────────────────────────────────────────────
 
 export function detectGutters(grid, gridW, gridH, opts = {}) {
-  const minShort = opts.minShort ?? 2;
+  const minShort = opts.minShort ?? 1;
   const minLong  = opts.minLong  ?? 10;
 
   // 4-neighbor flood-fill labelling of empty cells. Each empty cell gets

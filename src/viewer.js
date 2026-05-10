@@ -628,7 +628,7 @@ function autoTuneAndApply(baseOpts) {
 const PANEL_CONTROLS = [
   { key: 'cellSize',          label: 'cellSize (pt)',     min: 1, max: 10,   step: 0.5,    def: 1.5 },
   { key: 'closeRadiusX',      label: 'closeRadiusX',      min: 0, max: 10,   step: 1,      def: 0 },
-  { key: 'closeRadiusY',      label: 'closeRadiusY',      min: 0, max: 20,   step: 1,      def: 0 },
+  { key: 'closeRadiusY',      label: 'closeRadiusY',      min: 0, max: 20,   step: 1,      def: 2 },
   { key: 'closeRadiusYSide',  label: 'closeRadiusYSide',  min: 0, max: 30,   step: 1,      def: 5 },
   { key: 'sideZoneFraction',  label: 'sideZoneFraction',  min: 0, max: 0.4,  step: 0.01,   def: 0.13 },
   { key: 'maxIsolatedRun',    label: 'maxIsolatedRun',    min: 0, max: 100,  step: 1,      def: 25 },

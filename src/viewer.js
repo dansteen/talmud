@@ -624,7 +624,7 @@ function autoTuneAndApply(baseOpts) {
 const PANEL_CONTROLS = [
   { key: 'minShort',  label: 'minShort',  min: 0,    max: 20,   step: 1,    def: 1 },
   { key: 'minLong',   label: 'minLong',   min: 0,    max: 200,  step: 1,    def: 10 },
-  { key: 'emptyFrac', label: 'emptyFrac', min: 0.25, max: 1,    step: 0.25, def: 0.75 },
+  { key: 'emptyFrac', label: 'emptyFrac', min: 0,    max: 1,    step: 0.1,  def: 0.7 },
   { key: 'cellMult',  label: 'cellMult',  min: 0.25, max: 1,    step: 0.25, def: 1 },
 ];
 

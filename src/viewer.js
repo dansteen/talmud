@@ -623,7 +623,7 @@ const PANEL_CONTROLS = [
 
 let panelStatusEl = null;
 const sliderRefs = new Map(); // key → { input, val, step }
-const overlayDisplay = { boxes: true, colors: true };
+const overlayDisplay = { boxes: true, colors: true, cells: false };
 const PANEL_POS_KEY = 'regionDebugPanelPos';
 
 function createRegionDebugPanel() {
@@ -651,6 +651,7 @@ function createRegionDebugPanel() {
   toggleRow.style.cssText = 'display:flex;gap:12px;margin:2px 0 8px;';
   toggleRow.appendChild(makeToggle('boxes',  overlayDisplay.boxes,  v => { overlayDisplay.boxes  = v; drawRegionOverlay(); }));
   toggleRow.appendChild(makeToggle('colors', overlayDisplay.colors, v => { overlayDisplay.colors = v; drawRegionOverlay(); }));
+  toggleRow.appendChild(makeToggle('cells',  overlayDisplay.cells,  v => { overlayDisplay.cells  = v; drawRegionOverlay(); }));
   panel.appendChild(toggleRow);
 
   for (const c of PANEL_CONTROLS) {
@@ -849,6 +850,23 @@ function drawRegionOverlay() {
   }
   mctx.putImageData(img, 0, 0);
   overlay.appendChild(mask);
+
+  // Optional: draw the cell grid as a CSS-only overlay. Each tile is
+  // cellSize/pageW × cellSize/pageH of the overlay; the linear-gradient
+  // pattern paints the top and left 1px of every tile.
+  if (overlayDisplay.cells) {
+    const { cellSize } = pixelGridData;
+    const tileW = (cellSize / pageW * 100);
+    const tileH = (cellSize / pageH * 100);
+    const gridDiv = document.createElement('div');
+    gridDiv.style.cssText =
+      'position:absolute;inset:0;pointer-events:none;' +
+      'background-image:' +
+        'linear-gradient(to right, rgba(80,160,255,0.4) 1px, transparent 1px),' +
+        'linear-gradient(to bottom, rgba(80,160,255,0.4) 1px, transparent 1px);' +
+      `background-size: ${tileW}% ${tileH}%;`;
+    overlay.appendChild(gridDiv);
+  }
 }
 
 // Snapshot of the current view in PDF-coordinate units that survives the

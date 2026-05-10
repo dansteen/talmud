@@ -80,14 +80,25 @@ export async function buildPixelGridFromPdfPage(pdfPage, cellSize = 1.5) {
 
 export function detectRegionsFromGrid(rawGrid, gridW, gridH, cellSize, textItems, opts = {}) {
   const closeRadiusY      = opts.closeRadiusY      ?? 2;
+  // Side bands need a larger Y radius: small side-meforshim fonts have wider
+  // inter-line gaps than block-letter gemara. Falls back to closeRadiusY if
+  // not specified.
+  const closeRadiusYSide  = opts.closeRadiusYSide  ?? closeRadiusY;
+  const sideZoneFraction  = opts.sideZoneFraction  ?? 0.13;
   const minRegionFraction = opts.minRegionFraction ?? 0.0005;
 
-  // Light vertical close: bridge gaps between glyph rows within a column
-  // without spanning the wider whitespace around section separators.
+  // Per-x closing radius: the leftmost/rightmost sideZoneFraction of the
+  // grid uses closeRadiusYSide; everywhere else uses closeRadiusY.
+  const edgeBand = Math.round(sideZoneFraction * gridW);
+  const ryAt = (closeRadiusYSide === closeRadiusY)
+    ? closeRadiusY
+    : (x) => (x < edgeBand || x >= gridW - edgeBand) ? closeRadiusYSide : closeRadiusY;
+
   let workGrid = rawGrid;
-  if (closeRadiusY > 0) {
-    workGrid = vertDilate(workGrid, gridW, gridH, closeRadiusY);
-    workGrid = vertErode (workGrid, gridW, gridH, closeRadiusY);
+  const anyClose = closeRadiusY > 0 || closeRadiusYSide > 0;
+  if (anyClose) {
+    workGrid = vertDilate(workGrid, gridW, gridH, ryAt);
+    workGrid = vertErode (workGrid, gridW, gridH, ryAt);
   }
 
   const { labels, count } = connectedComponents(workGrid, gridW, gridH);
@@ -101,13 +112,21 @@ export function detectRegionsFromGrid(rawGrid, gridW, gridH, cellSize, textItems
 
 // ── Morphological operations (Y-direction only) ─────────────────────────
 
+// `radius` may be a number (uniform) or a function (x) → number for per-x
+// radius. The latter lets us close more aggressively in the side bands.
 function vertDilate(grid, gridW, gridH, radius) {
-  if (radius <= 0) return grid;
   const out = new Uint8Array(gridW * gridH);
   for (let x = 0; x < gridW; x++) {
+    const r = typeof radius === 'function' ? radius(x) : radius;
+    if (r <= 0) {
+      for (let y = 0; y < gridH; y++) {
+        if (grid[y * gridW + x]) out[y * gridW + x] = 1;
+      }
+      continue;
+    }
     for (let y = 0; y < gridH; y++) {
       let any = false;
-      for (let dy = -radius; dy <= radius; dy++) {
+      for (let dy = -r; dy <= r; dy++) {
         const yy = y + dy;
         if (yy >= 0 && yy < gridH && grid[yy * gridW + x]) {
           any = true;
@@ -121,12 +140,18 @@ function vertDilate(grid, gridW, gridH, radius) {
 }
 
 function vertErode(grid, gridW, gridH, radius) {
-  if (radius <= 0) return grid;
   const out = new Uint8Array(gridW * gridH);
   for (let x = 0; x < gridW; x++) {
+    const r = typeof radius === 'function' ? radius(x) : radius;
+    if (r <= 0) {
+      for (let y = 0; y < gridH; y++) {
+        if (grid[y * gridW + x]) out[y * gridW + x] = 1;
+      }
+      continue;
+    }
     for (let y = 0; y < gridH; y++) {
       let all = true;
-      for (let dy = -radius; dy <= radius; dy++) {
+      for (let dy = -r; dy <= r; dy++) {
         const yy = y + dy;
         if (yy < 0 || yy >= gridH || !grid[yy * gridW + x]) {
           all = false;

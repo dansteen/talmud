@@ -32,8 +32,11 @@ export async function buildPixelGridFromPdfPage(pdfPage, cellSize) {
   const gridH = Math.max(1, Math.ceil(imgH / cellSize));
   const grid = new Uint8Array(gridW * gridH);
 
-  // Threshold: anything with luminance below 200 (out of 255) counts as ink.
+  // Per-pixel luminance threshold: a pixel is "dark" if luminance < 200.
+  // A cell is occupied if at least 25% of its pixels are dark — i.e.
+  // it's empty only when 75%+ of the cell is empty.
   const threshold = 200;
+  const occupiedFrac = 0.25;
 
   for (let cy = 0; cy < gridH; cy++) {
     const y0 = Math.floor(cy * cellSize);
@@ -41,19 +44,18 @@ export async function buildPixelGridFromPdfPage(pdfPage, cellSize) {
     for (let cx = 0; cx < gridW; cx++) {
       const x0 = Math.floor(cx * cellSize);
       const x1 = Math.min(imgW, Math.ceil((cx + 1) * cellSize));
-      let occupied = false;
-      outer: for (let y = y0; y < y1; y++) {
+      let dark = 0;
+      let total = 0;
+      for (let y = y0; y < y1; y++) {
         const rowBase = y * imgW * 4;
         for (let x = x0; x < x1; x++) {
           const i = rowBase + x * 4;
           const lum = Math.max(pixels[i], pixels[i + 1], pixels[i + 2]);
-          if (lum < threshold) {
-            occupied = true;
-            break outer;
-          }
+          if (lum < threshold) dark++;
+          total++;
         }
       }
-      if (occupied) grid[cy * gridW + cx] = 1;
+      if (total > 0 && dark / total >= occupiedFrac) grid[cy * gridW + cx] = 1;
     }
   }
 

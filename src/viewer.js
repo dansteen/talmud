@@ -1,7 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { detectRegions } from './regions.js';
-import { buildPixelGridFromPdfPage, detectRegionsFromGrid } from './regionsPixel.js';
+import { buildPixelGridFromPdfPage, detectRegionsFromGrid, detectHorizontalGutters } from './regionsPixel.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -635,6 +635,7 @@ const PANEL_CONTROLS = [
   { key: 'minIsolationGap',   label: 'minIsolationGap',   min: 0, max: 50,   step: 1,      def: 10 },
   { key: 'minEmptyBelow',     label: 'minEmptyBelow',     min: 0, max: 30,   step: 1,      def: 0 },
   { key: 'minRegionFraction', label: 'minRegionFrac',     min: 0, max: 0.02, step: 0.0005, def: 0.0005 },
+  { key: 'gutterThickness',   label: 'gutterThickness',   min: 1, max: 30,   step: 1,      def: 4 },
 ];
 
 let panelStatusEl = null;
@@ -895,6 +896,23 @@ function drawRegionOverlay() {
         `pointer-events:none;`;
       label.textContent = `#${reg.id} fs${reg.fontSize.toFixed(1)} n${reg.itemCount}`;
       overlay.appendChild(label);
+    }
+  }
+
+  // Horizontal gutters: bands of mostly-empty rows in the page's pixel grid.
+  if (pixelGridData) {
+    const { grid: pgrid, gridW: pgw, gridH: pgh } = pixelGridData;
+    const minThickness = regionOpts.gutterThickness ?? 4;
+    const gutters = detectHorizontalGutters(pgrid, pgw, pgh, { minThickness });
+    for (const g of gutters) {
+      const band = document.createElement('div');
+      band.style.cssText =
+        `position:absolute;left:0;width:100%;` +
+        `top:${(g.y0 / pgh * 100)}%;` +
+        `height:${((g.y1 - g.y0) / pgh * 100)}%;` +
+        `background:rgba(255,80,80,0.35);` +
+        `pointer-events:none;`;
+      overlay.appendChild(band);
     }
   }
 }

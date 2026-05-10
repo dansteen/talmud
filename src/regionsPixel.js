@@ -76,6 +76,57 @@ export async function buildPixelGridFromPdfPage(pdfPage, cellSize = 1.5) {
   };
 }
 
+// ── Horizontal gutter detection ─────────────────────────────────────────
+//
+// Find horizontal bands where the page is empty. A row counts as "empty"
+// even if a single word dips down into it — we tolerate up to a small
+// fraction of the row being occupied. A band of consecutive empty rows
+// becomes a gutter only if it's at least `minThickness` cells tall, so
+// thin inter-line gaps inside a paragraph don't count.
+//
+// Returns: array of { y0, y1 } in cell coordinates (half-open).
+
+export function detectHorizontalGutters(grid, gridW, gridH, opts = {}) {
+  const minThickness = opts.minThickness ?? 4;
+  // A row is "empty enough" if at most this fraction of its cells is
+  // occupied. ~5% ≈ one word's worth of glyphs at typical Hebrew font
+  // sizes, which lets a single word dip down without disqualifying the
+  // band as a gutter.
+  const sparsityFrac = opts.sparsityFrac ?? 0.05;
+  const sparseMax = Math.floor(gridW * sparsityFrac);
+
+  // Per-row occupancy count.
+  const rowOcc = new Uint16Array(gridH);
+  for (let y = 0; y < gridH; y++) {
+    let count = 0;
+    const base = y * gridW;
+    for (let x = 0; x < gridW; x++) {
+      if (grid[base + x]) count++;
+    }
+    rowOcc[y] = count;
+  }
+
+  const gutters = [];
+  let inBand = false;
+  let bandStart = 0;
+  for (let y = 0; y < gridH; y++) {
+    const empty = rowOcc[y] <= sparseMax;
+    if (empty && !inBand) {
+      inBand = true;
+      bandStart = y;
+    } else if (!empty && inBand) {
+      const thickness = y - bandStart;
+      if (thickness >= minThickness) gutters.push({ y0: bandStart, y1: y });
+      inBand = false;
+    }
+  }
+  if (inBand) {
+    const thickness = gridH - bandStart;
+    if (thickness >= minThickness) gutters.push({ y0: bandStart, y1: gridH });
+  }
+  return gutters;
+}
+
 // ── Region detection on a pre-built occupancy grid ──────────────────────
 
 export function detectRegionsFromGrid(rawGrid, gridW, gridH, cellSize, textItems, opts = {}) {

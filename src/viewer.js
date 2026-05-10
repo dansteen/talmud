@@ -629,6 +629,10 @@ const PANEL_CONTROLS = [
 ];
 
 let panelStatusEl = null;
+let mouseCoordEl = null;
+// Last computed grid geometry, updated by drawRegionOverlay so the mouse
+// position can be reported in cell coordinates.
+let currentGrid = { gridW: 1, gridH: 1, cellSize: 1.5 };
 const sliderRefs = new Map(); // key → { input, val, step }
 const overlayDisplay = { boxes: true, colors: true, cells: false };
 const PANEL_POS_KEY = 'regionDebugPanelPos';
@@ -699,8 +703,32 @@ function createRegionDebugPanel() {
   panelStatusEl.style.cssText = 'margin-top:6px;opacity:0.75;font-size:10px;line-height:1.4;';
   panel.appendChild(panelStatusEl);
 
+  mouseCoordEl = document.createElement('div');
+  mouseCoordEl.style.cssText = 'margin-top:4px;opacity:0.75;font-size:10px;line-height:1.4;';
+  mouseCoordEl.textContent = 'cell: -';
+  panel.appendChild(mouseCoordEl);
+
   document.body.appendChild(panel);
   updateDebugPanelStatus();
+
+  // Track mouse position and report it as cell (x, y) coordinates against
+  // the current grid. We use the page-canvas bounding rect since the
+  // canvas is sized to the page (the overlay is positioned identically).
+  window.addEventListener('mousemove', (e) => {
+    if (!mouseCoordEl) return;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const relX = e.clientX - rect.left;
+    const relY = e.clientY - rect.top;
+    if (relX < 0 || relY < 0 || relX > rect.width || relY > rect.height) {
+      mouseCoordEl.textContent = `cell: - / ${currentGrid.gridW}×${currentGrid.gridH}`;
+      return;
+    }
+    const cellX = Math.floor(relX / rect.width  * currentGrid.gridW);
+    const cellY = Math.floor(relY / rect.height * currentGrid.gridH);
+    mouseCoordEl.textContent =
+      `cell: (${cellX}, ${cellY}) / ${currentGrid.gridW}×${currentGrid.gridH}`;
+  });
 }
 
 function makeToggle(label, initial, onChange) {
@@ -837,6 +865,7 @@ function drawRegionOverlay() {
   const emptyFrac = regionOpts.emptyFrac ?? 0.75;
   const cellSize  = Math.max(0.1, smallestFontPt * cellMult);
   const { grid, gridW, gridH } = buildGridFromImageData(pixelImageData, cellSize, emptyFrac);
+  currentGrid = { gridW, gridH, cellSize };
 
   const minShort = regionOpts.minShort ?? 1;
   const minLong  = regionOpts.minLong  ?? 10;

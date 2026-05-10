@@ -77,59 +77,81 @@ export function detectGutters(grid, gridW, gridH, opts = {}) {
   const minShort = opts.minShort ?? 1;
   const minLong  = opts.minLong  ?? 10;
 
-  // 4-neighbor flood-fill labelling of empty cells. Each empty cell gets
-  // a component id; we track each component's bbox as we go.
-  const labels = new Int32Array(gridW * gridH);
-  const compBBox = []; // index = id - 1; { xMin, xMax, yMin, yMax }
-  let nextId = 0;
-  const stack = [];
-
+  // Step 1a: hMark[i] = 1 iff cell i is empty AND lies inside a horizontal
+  // run of empty cells whose length ≥ minLong.
+  const hMark = new Uint8Array(gridW * gridH);
   for (let y = 0; y < gridH; y++) {
-    for (let x = 0; x < gridW; x++) {
-      const seed = y * gridW + x;
-      if (grid[seed] !== 0 || labels[seed] !== 0) continue;
-      nextId++;
-      const id = nextId;
-      let xMin = x, xMax = x, yMin = y, yMax = y;
-
-      stack.length = 0;
-      stack.push(seed);
-      while (stack.length) {
-        const i = stack.pop();
-        if (labels[i] !== 0 || grid[i] !== 0) continue;
-        labels[i] = id;
-        const cx = i % gridW;
-        const cy = (i - cx) / gridW;
-        if (cx < xMin) xMin = cx;
-        if (cx > xMax) xMax = cx;
-        if (cy < yMin) yMin = cy;
-        if (cy > yMax) yMax = cy;
-        if (cx > 0)         stack.push(i - 1);
-        if (cx < gridW - 1) stack.push(i + 1);
-        if (cy > 0)         stack.push(i - gridW);
-        if (cy < gridH - 1) stack.push(i + gridW);
+    const base = y * gridW;
+    let runStart = -1;
+    for (let x = 0; x <= gridW; x++) {
+      const isEmpty = x < gridW && grid[base + x] === 0;
+      if (isEmpty) {
+        if (runStart < 0) runStart = x;
+      } else if (runStart >= 0) {
+        if (x - runStart >= minLong) {
+          for (let xx = runStart; xx < x; xx++) hMark[base + xx] = 1;
+        }
+        runStart = -1;
       }
-      compBBox.push({ xMin, xMax, yMin, yMax });
     }
   }
 
-  // Each component qualifies as a gutter iff its bbox shorter side ≥
-  // minShort AND its longer side ≥ minLong.
-  const isGutter = new Uint8Array(nextId + 1); // index = id, id 0 = unused
-  for (let id = 1; id <= nextId; id++) {
-    const b = compBBox[id - 1];
-    const w = b.xMax - b.xMin + 1;
-    const h = b.yMax - b.yMin + 1;
-    const lo = Math.min(w, h);
-    const hi = Math.max(w, h);
-    if (lo >= minShort && hi >= minLong) isGutter[id] = 1;
+  // Step 1b: vMark[i] = 1 iff cell i is empty AND lies inside a vertical
+  // run of empty cells whose length ≥ minLong.
+  const vMark = new Uint8Array(gridW * gridH);
+  for (let x = 0; x < gridW; x++) {
+    let runStart = -1;
+    for (let y = 0; y <= gridH; y++) {
+      const isEmpty = y < gridH && grid[y * gridW + x] === 0;
+      if (isEmpty) {
+        if (runStart < 0) runStart = y;
+      } else if (runStart >= 0) {
+        if (y - runStart >= minLong) {
+          for (let yy = runStart; yy < y; yy++) vMark[yy * gridW + x] = 1;
+        }
+        runStart = -1;
+      }
+    }
   }
 
-  // Build output mask: 1 where cell is in a qualifying component.
   const out = new Uint8Array(gridW * gridH);
-  for (let i = 0; i < labels.length; i++) {
-    if (isGutter[labels[i]]) out[i] = 1;
+
+  // Step 2a: a cell is a horizontal gutter iff it's hMark AND lies inside
+  // a column-wise vertical stack of at least minShort consecutive hMark
+  // cells (so the long horizontal run has thickness ≥ minShort).
+  for (let x = 0; x < gridW; x++) {
+    let runStart = -1;
+    for (let y = 0; y <= gridH; y++) {
+      const isMarked = y < gridH && hMark[y * gridW + x] === 1;
+      if (isMarked) {
+        if (runStart < 0) runStart = y;
+      } else if (runStart >= 0) {
+        if (y - runStart >= minShort) {
+          for (let yy = runStart; yy < y; yy++) out[yy * gridW + x] = 1;
+        }
+        runStart = -1;
+      }
+    }
   }
+
+  // Step 2b: same for vertical gutters — vMark in a row-wise horizontal
+  // stack of at least minShort consecutive vMark cells.
+  for (let y = 0; y < gridH; y++) {
+    const base = y * gridW;
+    let runStart = -1;
+    for (let x = 0; x <= gridW; x++) {
+      const isMarked = x < gridW && vMark[base + x] === 1;
+      if (isMarked) {
+        if (runStart < 0) runStart = x;
+      } else if (runStart >= 0) {
+        if (x - runStart >= minShort) {
+          for (let xx = runStart; xx < x; xx++) out[base + xx] = 1;
+        }
+        runStart = -1;
+      }
+    }
+  }
+
   return out;
 }
 

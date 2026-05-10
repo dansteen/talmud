@@ -1,6 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { detectRegions } from './regions.js';
+import { buildPixelGridFromPdfPage, detectRegionsFromGrid } from './regionsPixel.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -57,6 +58,10 @@ let textItems = [];
 // Region detection result: { regions, labels, gridW, gridH, cellSize } or null
 // before any page has loaded. The labeled grid drives O(1) hit-testing.
 let regionsData = null;
+
+// Pixel occupancy grid built from the off-screen render of the current page.
+// Computed once per page load and reused when slider tweaks re-run detection.
+let pixelGridData = null;
 
 // Set per page during loadPage from computeTextData. Drives the auto-tuner's
 // expected region count (perek-end pages have ~double the regions).
@@ -342,12 +347,15 @@ export async function loadPage(url, savedViewState = null) {
   textBbox = data.textBbox;
   pageIsPerekEnd = data.perekEnd;
 
-  // Detect regions from the per-item rects: low-res occupancy grid,
-  // morphological closing, connected components. The auto-tuner sweeps a
-  // small ladder of detection settings until the significant-region count
-  // matches expectations (4-5 normal, 8-10 on perek-end pages); URL params
-  // seed the first attempt and the sliders override live afterwards.
-  autoTuneAndApply(regionTuneFromUrl());
+  // Pixel-based region detection: render the page off-screen at scale 1
+  // and build an occupancy grid from the actual rendered ink (text glyphs,
+  // rule lines, decorative borders). Connected components on this grid
+  // produces regions whose shapes match what's visible, with no auto-tune
+  // ladder, no target count, and no font-name guessing. textItems are
+  // still passed in so each region can be labeled with median fontSize
+  // and item count.
+  pixelGridData = await buildPixelGridFromPdfPage(currentPdfPage);
+  applyPixelDetection(regionTuneFromUrl());
 
   // If we have a saved zoom/center for this page, render at that scale and
   // place the saved center at the screen center. Otherwise default to home
@@ -372,19 +380,33 @@ export async function loadPage(url, savedViewState = null) {
 let regionOpts = {};
 
 function recomputeRegions(opts) {
+  applyPixelDetection(opts);
+}
+
+// Run pixel-based detection against the cached pixel grid. opts merges into
+// regionOpts (closeRadiusY, minRegionFraction). No auto-tune, no target
+// count — whatever components fall out of the page's actual ink are the
+// regions.
+function applyPixelDetection(opts) {
   if (opts) regionOpts = { ...regionOpts, ...opts };
-  if (!textItems.length) {
+  if (!pixelGridData) {
     regionsData = null;
     regions = null;
     drawRegionOverlay();
     return;
   }
-  regionsData = detectRegions(textItems, pageW, pageH, regionOpts);
+  const { grid, gridW, gridH, cellSize } = pixelGridData;
+  regionsData = detectRegionsFromGrid(grid, gridW, gridH, cellSize, textItems, regionOpts);
   regions = regionsData.regions;
-  // Manual tuning via slider — the auto-tune diagnostics from page-load are
-  // now stale, but we leave them in place so the user can still see what was
-  // tried before they took over.
-  if (DEBUG_REGIONS) updateDebugPanelStatus();
+  if (DEBUG_REGIONS) {
+    syncDebugPanelSliders();
+    updateDebugPanelStatus();
+    // eslint-disable-next-line no-console
+    console.log(
+      `[regions] pixel-based: ${regions.length} regions`,
+      regions.map(r => `#${r.id} fs=${r.fontSize.toFixed(1)} cells=${r.pixelCount} items=${r.itemCount}`),
+    );
+  }
   drawRegionOverlay();
 }
 

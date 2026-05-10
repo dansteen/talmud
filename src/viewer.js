@@ -1,7 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { detectRegions } from './regions.js';
-import { buildPixelGridFromPdfPage, detectGutters, smallestFontCellSize } from './regionsPixel.js';
+import { renderPdfToImageData, buildGridFromImageData, detectGutters, smallestFontCellSize } from './regionsPixel.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -61,7 +61,11 @@ let regionsData = null;
 
 // Pixel occupancy grid built from the off-screen render of the current page.
 // Computed once per page load and reused when slider tweaks re-run detection.
-let pixelGridData = null;
+// Off-screen render result for the current page. Cached so cellSize and
+// emptyFrac slider tweaks can rebuild the grid without re-rendering the PDF.
+let pixelImageData = null;
+// Smallest fontSize on the current page; cellSize derives from this × cellMult.
+let smallestFontPt = 1.5;
 
 // Set per page during loadPage from computeTextData. Drives the auto-tuner's
 // expected region count (perek-end pages have ~double the regions).
@@ -354,11 +358,11 @@ export async function loadPage(url, savedViewState = null) {
   // ladder, no target count, and no font-name guessing. textItems are
   // still passed in so each region can be labeled with median fontSize
   // and item count.
-  // Use the smallest font on the page as cellSize: at this scale a glyph
-  // of the smallest text is roughly 1 cell, so ink fills cells densely
-  // and within-letter holes don't appear as empty cells.
-  const cellSize = smallestFontCellSize(textItems);
-  pixelGridData = await buildPixelGridFromPdfPage(currentPdfPage, cellSize);
+  // Render the PDF off-screen once per page; the grid is rebuilt later
+  // (in drawRegionOverlay) using whatever cellSize / emptyFrac the
+  // sliders are at, so re-tuning doesn't require re-rendering.
+  ({ imageData: pixelImageData } = await renderPdfToImageData(currentPdfPage));
+  smallestFontPt = smallestFontCellSize(textItems);
   applyPixelDetection(regionTuneFromUrl());
 
   // If we have a saved zoom/center for this page, render at that scale and
@@ -387,9 +391,10 @@ function recomputeRegions(opts) {
   applyPixelDetection(opts);
 }
 
-// Just rebuild the overlay (drawRegionOverlay paints gutters from the
-// current pixelGridData and regionOpts.gutterThickness). No region
-// detection — this branch is gutter-only.
+// Just rebuild the overlay. drawRegionOverlay rebuilds the cell grid
+// from the cached pixel data using the current slider settings, then
+// paints gutter cells. No region detection on this branch — gutters
+// only.
 function applyPixelDetection(opts) {
   if (opts) regionOpts = { ...regionOpts, ...opts };
   regionsData = null;
@@ -617,8 +622,10 @@ function autoTuneAndApply(baseOpts) {
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'minShort',  label: 'minShort',  min: 0, max: 20,   step: 0.5,  def: 1 },
-  { key: 'minLong',   label: 'minLong',   min: 0, max: 200,  step: 0.5,  def: 10 },
+  { key: 'minShort',  label: 'minShort',  min: 0,    max: 20,   step: 1,    def: 1 },
+  { key: 'minLong',   label: 'minLong',   min: 0,    max: 200,  step: 1,    def: 10 },
+  { key: 'emptyFrac', label: 'emptyFrac', min: 0.25, max: 1,    step: 0.25, def: 0.75 },
+  { key: 'cellMult',  label: 'cellMult',  min: 0.25, max: 1,    step: 0.25, def: 1 },
 ];
 
 let panelStatusEl = null;
@@ -822,9 +829,15 @@ const REGION_COLORS = [
 function drawRegionOverlay() {
   if (!overlay) return;
   overlay.innerHTML = '';
-  if (!pixelGridData) return;
+  if (!pixelImageData) return;
 
-  const { grid, gridW, gridH } = pixelGridData;
+  // Build the cell grid from the cached page bitmap using the current
+  // slider settings. cellSize = smallest font on the page × cellMult.
+  const cellMult  = regionOpts.cellMult  ?? 1;
+  const emptyFrac = regionOpts.emptyFrac ?? 0.75;
+  const cellSize  = Math.max(0.1, smallestFontPt * cellMult);
+  const { grid, gridW, gridH } = buildGridFromImageData(pixelImageData, cellSize, emptyFrac);
+
   const minShort = regionOpts.minShort ?? 1;
   const minLong  = regionOpts.minLong  ?? 10;
   const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong });
@@ -855,7 +868,6 @@ function drawRegionOverlay() {
   // cellSize/pageW × cellSize/pageH of the overlay; the linear-gradient
   // pattern paints the top and left 1px of every tile.
   if (overlayDisplay.cells) {
-    const { cellSize } = pixelGridData;
     const tileW = (cellSize / pageW * 100);
     const tileH = (cellSize / pageH * 100);
     const gridDiv = document.createElement('div');

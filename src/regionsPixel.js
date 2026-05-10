@@ -12,9 +12,10 @@
 // stripes, wide short inter-paragraph bands) while ignoring tiny
 // connected-empties inside text (sub-letter holes, inter-letter gaps).
 
-// ── Pixel-grid construction ─────────────────────────────────────────────
+// ── Pixel-grid construction (split into render + grid build so that
+//    cellSize and emptyFrac can be re-tuned without re-rendering the PDF) ──
 
-export async function buildPixelGridFromPdfPage(pdfPage, cellSize) {
+export async function renderPdfToImageData(pdfPage) {
   const viewport = pdfPage.getViewport({ scale: 1 });
   const canvas = document.createElement('canvas');
   canvas.width = Math.ceil(viewport.width);
@@ -23,20 +24,28 @@ export async function buildPixelGridFromPdfPage(pdfPage, cellSize) {
   ctx.fillStyle = 'white';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   await pdfPage.render({ canvasContext: ctx, viewport }).promise;
+  return {
+    imageData: ctx.getImageData(0, 0, canvas.width, canvas.height),
+    pageW: viewport.width,
+    pageH: viewport.height,
+  };
+}
 
-  const imgW = canvas.width;
-  const imgH = canvas.height;
-  const pixels = ctx.getImageData(0, 0, imgW, imgH).data;
-
+// `emptyFrac` is the fraction of pixels in a cell that must be empty for
+// the cell itself to count as empty. e.g. 0.75 means a cell is empty
+// when at least 75% of its pixels are blank.
+export function buildGridFromImageData(imageData, cellSize, emptyFrac) {
+  const imgW = imageData.width;
+  const imgH = imageData.height;
+  const pixels = imageData.data;
   const gridW = Math.max(1, Math.ceil(imgW / cellSize));
   const gridH = Math.max(1, Math.ceil(imgH / cellSize));
   const grid = new Uint8Array(gridW * gridH);
 
   // Per-pixel luminance threshold: a pixel is "dark" if luminance < 200.
-  // A cell is occupied if at least 25% of its pixels are dark — i.e.
-  // it's empty only when 75%+ of the cell is empty.
   const threshold = 200;
-  const occupiedFrac = 0.25;
+  // A cell is occupied when its dark-pixel fraction exceeds (1 - emptyFrac).
+  const occupiedThreshold = 1 - emptyFrac;
 
   for (let cy = 0; cy < gridH; cy++) {
     const y0 = Math.floor(cy * cellSize);
@@ -55,18 +64,11 @@ export async function buildPixelGridFromPdfPage(pdfPage, cellSize) {
           total++;
         }
       }
-      if (total > 0 && dark / total >= occupiedFrac) grid[cy * gridW + cx] = 1;
+      if (total > 0 && dark / total > occupiedThreshold) grid[cy * gridW + cx] = 1;
     }
   }
 
-  return {
-    grid,
-    gridW,
-    gridH,
-    cellSize,
-    pageW: viewport.width,
-    pageH: viewport.height,
-  };
+  return { grid, gridW, gridH, cellSize };
 }
 
 // ── 2D gutter detection ─────────────────────────────────────────────────

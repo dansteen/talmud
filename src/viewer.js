@@ -1,7 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { detectRegions } from './regions.js';
-import { buildPixelGridFromPdfPage, detectRegionsFromGrid, detectHorizontalGutters } from './regionsPixel.js';
+import { buildPixelGridFromPdfPage, detectGutters } from './regionsPixel.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -383,29 +383,16 @@ function recomputeRegions(opts) {
   applyPixelDetection(opts);
 }
 
-// Run pixel-based detection against the cached pixel grid. opts merges into
-// regionOpts (closeRadiusY, minRegionFraction). No auto-tune, no target
-// count — whatever components fall out of the page's actual ink are the
-// regions.
+// Just rebuild the overlay (drawRegionOverlay paints gutters from the
+// current pixelGridData and regionOpts.gutterThickness). No region
+// detection — this branch is gutter-only.
 function applyPixelDetection(opts) {
   if (opts) regionOpts = { ...regionOpts, ...opts };
-  if (!pixelGridData) {
-    regionsData = null;
-    regions = null;
-    drawRegionOverlay();
-    return;
-  }
-  const { grid, gridW, gridH, cellSize } = pixelGridData;
-  regionsData = detectRegionsFromGrid(grid, gridW, gridH, cellSize, textItems, regionOpts);
-  regions = regionsData.regions;
+  regionsData = null;
+  regions = null;
   if (DEBUG_REGIONS) {
     syncDebugPanelSliders();
     updateDebugPanelStatus();
-    // eslint-disable-next-line no-console
-    console.log(
-      `[regions] pixel-based: ${regions.length} regions`,
-      regions.map(r => `#${r.id} fs=${r.fontSize.toFixed(1)} cells=${r.pixelCount} items=${r.itemCount}`),
-    );
   }
   drawRegionOverlay();
 }
@@ -626,16 +613,7 @@ function autoTuneAndApply(baseOpts) {
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'cellSize',          label: 'cellSize (pt)',     min: 1, max: 10,   step: 0.5,    def: 1.5 },
-  { key: 'closeRadiusX',      label: 'closeRadiusX',      min: 0, max: 10,   step: 1,      def: 0 },
-  { key: 'closeRadiusY',      label: 'closeRadiusY',      min: 0, max: 20,   step: 1,      def: 2 },
-  { key: 'closeRadiusYSide',  label: 'closeRadiusYSide',  min: 0, max: 30,   step: 1,      def: 5 },
-  { key: 'sideZoneFraction',  label: 'sideZoneFraction',  min: 0, max: 0.4,  step: 0.01,   def: 0.13 },
-  { key: 'maxIsolatedRun',    label: 'maxIsolatedRun',    min: 0, max: 100,  step: 1,      def: 25 },
-  { key: 'minIsolationGap',   label: 'minIsolationGap',   min: 0, max: 50,   step: 1,      def: 10 },
-  { key: 'minEmptyBelow',     label: 'minEmptyBelow',     min: 0, max: 30,   step: 1,      def: 0 },
-  { key: 'minRegionFraction', label: 'minRegionFrac',     min: 0, max: 0.02, step: 0.0005, def: 0.0005 },
-  { key: 'gutterThickness',   label: 'gutterThickness',   min: 1, max: 30,   step: 1,      def: 4 },
+  { key: 'gutterThickness',   label: 'gutterThickness',   min: 0, max: 30,   step: 1,      def: 4 },
 ];
 
 let panelStatusEl = null;
@@ -838,83 +816,33 @@ const REGION_COLORS = [
 function drawRegionOverlay() {
   if (!overlay) return;
   overlay.innerHTML = '';
-  if (!regionsData) return;
+  if (!pixelGridData) return;
 
-  const { labels, grid, gridW, gridH, cellSize, regions: regs } = regionsData;
+  const { grid, gridW, gridH } = pixelGridData;
+  const thickness = regionOpts.gutterThickness ?? 4;
+  const gutterMask = detectGutters(grid, gridW, gridH, { thickness });
 
-  if (overlayDisplay.colors) {
-    // Pixel mask via an offscreen canvas at grid resolution, scaled up via CSS.
-    // image-rendering: pixelated keeps the cell boundaries crisp.
-    const mask = document.createElement('canvas');
-    mask.width = gridW;
-    mask.height = gridH;
-    mask.style.cssText =
-      'position:absolute;inset:0;width:100%;height:100%;' +
-      'image-rendering:pixelated;image-rendering:crisp-edges;' +
-      'pointer-events:none;';
-    const mctx = mask.getContext('2d');
-    const img = mctx.createImageData(gridW, gridH);
-    // Paint only occupied cells with the region's color — visualizes the
-    // *actual text shape*, not the (rectangular) region bounds. The bbox
-    // outline drawn below shows the region's interaction bounds.
-    for (let i = 0; i < gridW * gridH; i++) {
-      const lbl = labels[i];
-      if (lbl === 0) continue;
-      if (grid && !grid[i]) continue;
-      const [r, g, b] = REGION_COLORS[(lbl - 1) % REGION_COLORS.length];
-      const o = i * 4;
-      img.data[o + 0] = r;
-      img.data[o + 1] = g;
-      img.data[o + 2] = b;
-      img.data[o + 3] = 110;
-    }
-    mctx.putImageData(img, 0, 0);
-    overlay.appendChild(mask);
+  // Paint gutter cells onto an offscreen canvas at grid resolution, then
+  // scale up via CSS. image-rendering:pixelated keeps cell edges crisp.
+  const mask = document.createElement('canvas');
+  mask.width = gridW;
+  mask.height = gridH;
+  mask.style.cssText =
+    'position:absolute;inset:0;width:100%;height:100%;' +
+    'image-rendering:pixelated;image-rendering:crisp-edges;' +
+    'pointer-events:none;';
+  const mctx = mask.getContext('2d');
+  const img = mctx.createImageData(gridW, gridH);
+  for (let i = 0; i < gridW * gridH; i++) {
+    if (!gutterMask[i]) continue;
+    const o = i * 4;
+    img.data[o + 0] = 255;
+    img.data[o + 1] = 80;
+    img.data[o + 2] = 80;
+    img.data[o + 3] = 100;
   }
-
-  if (overlayDisplay.boxes) {
-    for (const reg of regs) {
-      const [r, g, b] = REGION_COLORS[(reg.id - 1) % REGION_COLORS.length];
-      const box = document.createElement('div');
-      box.style.cssText =
-        `position:absolute;` +
-        `left:${(reg.bbox.x / pageW * 100)}%;` +
-        `top:${(reg.bbox.y / pageH * 100)}%;` +
-        `width:${(reg.bbox.w / pageW * 100)}%;` +
-        `height:${(reg.bbox.h / pageH * 100)}%;` +
-        `border:2px solid rgba(${r},${g},${b},0.9);` +
-        `box-sizing:border-box;pointer-events:none;`;
-      overlay.appendChild(box);
-
-      const label = document.createElement('span');
-      label.style.cssText =
-        `position:absolute;` +
-        `left:${(reg.bbox.x / pageW * 100)}%;` +
-        `top:${(reg.bbox.y / pageH * 100)}%;` +
-        `font:10px/1.2 ui-monospace,monospace;color:white;` +
-        `background:rgba(0,0,0,0.75);padding:1px 4px;white-space:nowrap;` +
-        `pointer-events:none;`;
-      label.textContent = `#${reg.id} fs${reg.fontSize.toFixed(1)} n${reg.itemCount}`;
-      overlay.appendChild(label);
-    }
-  }
-
-  // Horizontal gutters: bands of mostly-empty rows in the page's pixel grid.
-  if (pixelGridData) {
-    const { grid: pgrid, gridW: pgw, gridH: pgh } = pixelGridData;
-    const minThickness = regionOpts.gutterThickness ?? 4;
-    const gutters = detectHorizontalGutters(pgrid, pgw, pgh, { minThickness });
-    for (const g of gutters) {
-      const band = document.createElement('div');
-      band.style.cssText =
-        `position:absolute;left:0;width:100%;` +
-        `top:${(g.y0 / pgh * 100)}%;` +
-        `height:${((g.y1 - g.y0) / pgh * 100)}%;` +
-        `background:rgba(255,80,80,0.35);` +
-        `pointer-events:none;`;
-      overlay.appendChild(band);
-    }
-  }
+  mctx.putImageData(img, 0, 0);
+  overlay.appendChild(mask);
 }
 
 // Snapshot of the current view in PDF-coordinate units that survives the

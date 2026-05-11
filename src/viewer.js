@@ -1,7 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { detectRegions } from './regions.js';
-import { renderPdfToImageData, buildGridFromImageData, detectGutters, smallestFontCellSize } from './regionsPixel.js';
+import { renderPdfToImageData, buildGridFromImageData, detectGutters, smallestFontCellSize, findRightmostColumnEdge } from './regionsPixel.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -713,22 +713,29 @@ function createRegionDebugPanel() {
   updateDebugPanelStatus();
 
   // Track mouse position and report it as cell (x, y) coordinates against
-  // the current grid. We use the page-canvas bounding rect since the
-  // canvas is sized to the page (the overlay is positioned identically).
+  // the current grid. The grid is shifted right by xOffset PDF points;
+  // pdfX = (relX / overlayWidth) * pageW, then cellX = (pdfX - xOffset) /
+  // cellSize. Out-of-grid positions show as -.
   window.addEventListener('mousemove', (e) => {
     if (!mouseCoordEl) return;
     const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
     const relX = e.clientX - rect.left;
     const relY = e.clientY - rect.top;
+    const { gridW, gridH, cellSize, xOffset = 0 } = currentGrid;
     if (relX < 0 || relY < 0 || relX > rect.width || relY > rect.height) {
-      mouseCoordEl.textContent = `cell: - / ${currentGrid.gridW}×${currentGrid.gridH}`;
+      mouseCoordEl.textContent = `cell: - / ${gridW}×${gridH}`;
       return;
     }
-    const cellX = Math.floor(relX / rect.width  * currentGrid.gridW);
-    const cellY = Math.floor(relY / rect.height * currentGrid.gridH);
-    mouseCoordEl.textContent =
-      `cell: (${cellX}, ${cellY}) / ${currentGrid.gridW}×${currentGrid.gridH}`;
+    const pdfX = (relX / rect.width)  * pageW;
+    const pdfY = (relY / rect.height) * pageH;
+    const cellX = Math.floor((pdfX - xOffset) / cellSize);
+    const cellY = Math.floor(pdfY / cellSize);
+    if (cellX < 0 || cellX >= gridW) {
+      mouseCoordEl.textContent = `cell: (-, ${cellY}) / ${gridW}×${gridH}`;
+    } else {
+      mouseCoordEl.textContent = `cell: (${cellX}, ${cellY}) / ${gridW}×${gridH}`;
+    }
   });
 }
 
@@ -866,9 +873,17 @@ function drawRegionOverlay() {
   const emptyFrac     = regionOpts.emptyFrac     ?? 0.75;
   const darkThreshold = regionOpts.darkThreshold ?? 130;
   const cellSize      = Math.max(0.1, smallestFontPt * cellMult);
+
+  // Anchor the grid to the right edge of the rightmost text column so a
+  // cell boundary lands exactly on it (the start-of-line edge for RTL).
+  // xOffset is the leftmost x where cells begin; the left sliver of the
+  // page before xOffset (page margin) isn't covered by the grid.
+  const rightAnchor = findRightmostColumnEdge(pixelImageData, darkThreshold);
+  const xOffset = ((rightAnchor % cellSize) + cellSize) % cellSize;
+
   const { grid, gridW, gridH } =
-    buildGridFromImageData(pixelImageData, cellSize, emptyFrac, darkThreshold);
-  currentGrid = { gridW, gridH, cellSize };
+    buildGridFromImageData(pixelImageData, cellSize, emptyFrac, darkThreshold, xOffset);
+  currentGrid = { gridW, gridH, cellSize, xOffset };
 
   const minShort = regionOpts.minShort ?? 1;
   const minLong  = regionOpts.minLong  ?? 10;
@@ -876,11 +891,16 @@ function drawRegionOverlay() {
 
   // Paint gutter cells onto an offscreen canvas at grid resolution, then
   // scale up via CSS. image-rendering:pixelated keeps cell edges crisp.
+  // The canvas covers PDF x range [xOffset, xOffset + gridW*cellSize] —
+  // i.e. shifted right by xOffset and slightly narrower than the page.
+  const overlayLeftPct  = (xOffset / pageW) * 100;
+  const overlayWidthPct = (gridW * cellSize / pageW) * 100;
   const mask = document.createElement('canvas');
   mask.width = gridW;
   mask.height = gridH;
   mask.style.cssText =
-    'position:absolute;inset:0;width:100%;height:100%;' +
+    'position:absolute;top:0;height:100%;' +
+    `left:${overlayLeftPct}%;width:${overlayWidthPct}%;` +
     'image-rendering:pixelated;image-rendering:crisp-edges;' +
     'pointer-events:none;';
   const mctx = mask.getContext('2d');
@@ -896,16 +916,16 @@ function drawRegionOverlay() {
   mctx.putImageData(img, 0, 0);
   overlay.appendChild(mask);
 
-  // Optional: draw the cell grid as a CSS-only overlay. The canvas above
-  // is gridW × gridH tiles stretched to the overlay, so each tile is
-  // 100/gridW × 100/gridH of the overlay — matching the canvas grid
-  // exactly even when pageW isn't an integer multiple of cellSize.
+  // Optional: draw the cell grid as a CSS-only overlay. Position the same
+  // way as the canvas so tiles line up cell-for-cell.
   if (overlayDisplay.cells) {
     const tileW = 100 / gridW;
     const tileH = 100 / gridH;
     const gridDiv = document.createElement('div');
     gridDiv.style.cssText =
-      'position:absolute;inset:0;pointer-events:none;' +
+      'position:absolute;top:0;height:100%;' +
+      `left:${overlayLeftPct}%;width:${overlayWidthPct}%;` +
+      'pointer-events:none;' +
       'background-image:' +
         'linear-gradient(to right, rgba(80,160,255,0.4) 1px, transparent 1px),' +
         'linear-gradient(to bottom, rgba(80,160,255,0.4) 1px, transparent 1px);' +

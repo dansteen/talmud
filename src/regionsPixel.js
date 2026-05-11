@@ -31,19 +31,47 @@ export async function renderPdfToImageData(pdfPage) {
   };
 }
 
+// Find the right edge of the rightmost text column. For Hebrew/Aramaic
+// RTL pages, every line starts at this same x, so the rightmost x where
+// a meaningful fraction of rows has a dark pixel is the column's right
+// edge. We scan from the page right inward.
+export function findRightmostColumnEdge(imageData, darkThreshold = 130, minOccupiedFrac = 0.2) {
+  const W = imageData.width;
+  const H = imageData.height;
+  const pixels = imageData.data;
+  const minRows = Math.ceil(H * minOccupiedFrac);
+  for (let x = W - 1; x >= 0; x--) {
+    let darkRows = 0;
+    for (let y = 0; y < H; y++) {
+      const i = (y * W + x) * 4;
+      const lum = Math.max(pixels[i], pixels[i + 1], pixels[i + 2]);
+      if (lum < darkThreshold) {
+        darkRows++;
+        if (darkRows >= minRows) return x + 1;  // one past the rightmost dark pixel
+      }
+    }
+  }
+  return W;
+}
+
 // `emptyFrac` is the fraction of pixels in a cell that must be empty for
 // the cell itself to count as empty. e.g. 0.75 means a cell is empty
 // when at least 75% of its pixels are blank.
 //
 // `darkThreshold` is the per-pixel luminance below which the pixel counts
 // as "dark." Default 130 — catches mid-gray (≥50% stroke coverage) and
-// up. Lower values are stricter (only saturated ink counts). Higher
-// values include lighter antialiasing pixels.
-export function buildGridFromImageData(imageData, cellSize, emptyFrac, darkThreshold = 130) {
+// up. Lower values are stricter (only saturated ink counts).
+//
+// `xOffset` shifts the cell grid horizontally. With xOffset = anchor mod
+// cellSize, one cell boundary lands exactly on `anchor` (the right edge
+// of the rightmost text column). The leftmost sliver [0, xOffset) is
+// excluded from the grid.
+export function buildGridFromImageData(imageData, cellSize, emptyFrac, darkThreshold = 130, xOffset = 0) {
   const imgW = imageData.width;
   const imgH = imageData.height;
   const pixels = imageData.data;
-  const gridW = Math.max(1, Math.ceil(imgW / cellSize));
+  const usableW = Math.max(0, imgW - xOffset);
+  const gridW = Math.max(1, Math.ceil(usableW / cellSize));
   const gridH = Math.max(1, Math.ceil(imgH / cellSize));
   const grid = new Uint8Array(gridW * gridH);
 
@@ -53,8 +81,9 @@ export function buildGridFromImageData(imageData, cellSize, emptyFrac, darkThres
     const y0 = Math.floor(cy * cellSize);
     const y1 = Math.min(imgH, Math.ceil((cy + 1) * cellSize));
     for (let cx = 0; cx < gridW; cx++) {
-      const x0 = Math.floor(cx * cellSize);
-      const x1 = Math.min(imgW, Math.ceil((cx + 1) * cellSize));
+      const x0 = Math.floor(xOffset + cx * cellSize);
+      const x1 = Math.min(imgW, Math.ceil(xOffset + (cx + 1) * cellSize));
+      if (x1 <= x0) continue;
       let dark = 0;
       let total = 0;
       for (let y = y0; y < y1; y++) {
@@ -70,7 +99,7 @@ export function buildGridFromImageData(imageData, cellSize, emptyFrac, darkThres
     }
   }
 
-  return { grid, gridW, gridH, cellSize };
+  return { grid, gridW, gridH, cellSize, xOffset };
 }
 
 // ── 2D gutter detection ─────────────────────────────────────────────────

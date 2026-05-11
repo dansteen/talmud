@@ -34,7 +34,12 @@ export async function renderPdfToImageData(pdfPage) {
 // `emptyFrac` is the fraction of pixels in a cell that must be empty for
 // the cell itself to count as empty. e.g. 0.75 means a cell is empty
 // when at least 75% of its pixels are blank.
-export function buildGridFromImageData(imageData, cellSize, emptyFrac) {
+//
+// `darkThreshold` is the per-pixel luminance below which the pixel counts
+// as "dark." Default 130 — catches mid-gray (≥50% stroke coverage) and
+// up. Lower values are stricter (only saturated ink counts). Higher
+// values include lighter antialiasing pixels.
+export function buildGridFromImageData(imageData, cellSize, emptyFrac, darkThreshold = 130) {
   const imgW = imageData.width;
   const imgH = imageData.height;
   const pixels = imageData.data;
@@ -42,9 +47,6 @@ export function buildGridFromImageData(imageData, cellSize, emptyFrac) {
   const gridH = Math.max(1, Math.ceil(imgH / cellSize));
   const grid = new Uint8Array(gridW * gridH);
 
-  // Per-pixel luminance threshold: a pixel is "dark" if luminance < 200.
-  const threshold = 200;
-  // A cell is occupied when its dark-pixel fraction exceeds (1 - emptyFrac).
   const occupiedThreshold = 1 - emptyFrac;
 
   for (let cy = 0; cy < gridH; cy++) {
@@ -60,7 +62,7 @@ export function buildGridFromImageData(imageData, cellSize, emptyFrac) {
         for (let x = x0; x < x1; x++) {
           const i = rowBase + x * 4;
           const lum = Math.max(pixels[i], pixels[i + 1], pixels[i + 2]);
-          if (lum < threshold) dark++;
+          if (lum < darkThreshold) dark++;
           total++;
         }
       }

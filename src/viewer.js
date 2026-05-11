@@ -622,10 +622,11 @@ function autoTuneAndApply(baseOpts) {
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'minShort',  label: 'minShort',  min: 0,    max: 20,   step: 1,    def: 1 },
-  { key: 'minLong',   label: 'minLong',   min: 0,    max: 200,  step: 1,    def: 10 },
-  { key: 'emptyFrac', label: 'emptyFrac', min: 0,    max: 1,    step: 0.1,  def: 0.7 },
-  { key: 'cellMult',  label: 'cellMult',  min: 0.1,  max: 1,    step: 0.1,  def: 1 },
+  { key: 'minShort',      label: 'minShort',      min: 0,    max: 20,   step: 1,    def: 1 },
+  { key: 'minLong',       label: 'minLong',       min: 0,    max: 200,  step: 1,    def: 10 },
+  { key: 'emptyFrac',     label: 'emptyFrac',     min: 0,    max: 1,    step: 0.1,  def: 0.7 },
+  { key: 'cellMult',      label: 'cellMult',      min: 0.1,  max: 1,    step: 0.1,  def: 1 },
+  { key: 'darkThreshold', label: 'darkThreshold', min: 30,   max: 250,  step: 10,   def: 130 },
 ];
 
 let panelStatusEl = null;
@@ -861,10 +862,12 @@ function drawRegionOverlay() {
 
   // Build the cell grid from the cached page bitmap using the current
   // slider settings. cellSize = smallest font on the page × cellMult.
-  const cellMult  = regionOpts.cellMult  ?? 1;
-  const emptyFrac = regionOpts.emptyFrac ?? 0.75;
-  const cellSize  = Math.max(0.1, smallestFontPt * cellMult);
-  const { grid, gridW, gridH } = buildGridFromImageData(pixelImageData, cellSize, emptyFrac);
+  const cellMult      = regionOpts.cellMult      ?? 1;
+  const emptyFrac     = regionOpts.emptyFrac     ?? 0.75;
+  const darkThreshold = regionOpts.darkThreshold ?? 130;
+  const cellSize      = Math.max(0.1, smallestFontPt * cellMult);
+  const { grid, gridW, gridH } =
+    buildGridFromImageData(pixelImageData, cellSize, emptyFrac, darkThreshold);
   currentGrid = { gridW, gridH, cellSize };
 
   const minShort = regionOpts.minShort ?? 1;

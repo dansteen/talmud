@@ -626,7 +626,7 @@ const PANEL_CONTROLS = [
   { key: 'minLong',       label: 'minLong',       min: 0,    max: 200,  step: 1,    def: 10 },
   { key: 'emptyFrac',     label: 'emptyFrac',     min: 0,    max: 1,    step: 0.1,  def: 0.7 },
   { key: 'cellMult',      label: 'cellMult',      min: 0.1,  max: 1,    step: 0.1,  def: 1 },
-  { key: 'darkThreshold', label: 'darkThreshold', min: 30,   max: 250,  step: 10,   def: 130 },
+  { key: 'darkThreshold', label: 'darkThreshold', min: 0,    max: 255,  step: 1,    def: 130 },
 ];
 
 let panelStatusEl = null;

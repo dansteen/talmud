@@ -1,7 +1,12 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { detectRegions } from './regions.js';
-import { renderPdfToImageData, buildGridFromImageData, detectGutters, detectRegionBoxes } from './regionsPixel.js';
+import {
+  renderPdfToImageData,
+  buildGridFromImageData,
+  detectGutters,
+  detectRegions as detectPixelRegions,
+} from './regionsPixel.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -628,7 +633,7 @@ let mouseCoordEl = null;
 // position can be reported in pixel coordinates.
 let currentGrid = { gridW: 1, gridH: 1 };
 const sliderRefs = new Map(); // key → { input, val, step }
-const overlayDisplay = { boxes: true, colors: true };
+const overlayDisplay = { mask: false, boxes: true, colors: true };
 const PANEL_POS_KEY = 'regionDebugPanelPos';
 
 function createRegionDebugPanel() {
@@ -654,6 +659,7 @@ function createRegionDebugPanel() {
   // Overlay visibility toggles. Grouped on one row to keep the panel compact.
   const toggleRow = document.createElement('div');
   toggleRow.style.cssText = 'display:flex;gap:12px;margin:2px 0 8px;';
+  toggleRow.appendChild(makeToggle('mask',   overlayDisplay.mask,   v => { overlayDisplay.mask   = v; drawRegionOverlay(); }));
   toggleRow.appendChild(makeToggle('boxes',  overlayDisplay.boxes,  v => { overlayDisplay.boxes  = v; drawRegionOverlay(); }));
   toggleRow.appendChild(makeToggle('colors', overlayDisplay.colors, v => { overlayDisplay.colors = v; drawRegionOverlay(); }));
   panel.appendChild(toggleRow);
@@ -861,43 +867,76 @@ function drawRegionOverlay() {
   const minLong  = regionOpts.minLong  ?? 50;
   const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong });
 
-  // Paint gutter pixels onto an offscreen canvas at image resolution, then
-  // scale up via CSS to cover the page.
-  const mask = document.createElement('canvas');
-  mask.width = gridW;
-  mask.height = gridH;
-  mask.style.cssText =
+  const N = gridW * gridH;
+  const overlayStyle =
     'position:absolute;top:0;left:0;width:100%;height:100%;' +
     'image-rendering:pixelated;image-rendering:crisp-edges;' +
     'pointer-events:none;';
-  const mctx = mask.getContext('2d');
-  const img = mctx.createImageData(gridW, gridH);
-  for (let i = 0; i < gridW * gridH; i++) {
-    if (!gutterMask[i]) continue;
-    const o = i * 4;
-    img.data[o + 0] = 255;
-    img.data[o + 1] = 80;
-    img.data[o + 2] = 80;
-    img.data[o + 3] = 100;
-  }
-  mctx.putImageData(img, 0, 0);
-  overlay.appendChild(mask);
 
-  // Region bboxes: 4-connected components of non-gutter pixels. The
-  // gutter mask already includes the page margins, so the surviving
-  // components are the demarcated content areas (gemara, Rashi, Tosafos,
-  // …). Draw each as a green outline; sized in % so the overlay scales
-  // with the page.
-  if (overlayDisplay.boxes) {
-    const boxes = detectRegionBoxes(gutterMask, gridW, gridH);
-    for (const b of boxes) {
-      const box = document.createElement('div');
-      box.style.cssText =
-        'position:absolute;box-sizing:border-box;pointer-events:none;' +
-        'border:2px solid rgba(80,255,130,0.85);' +
-        `left:${(b.x / gridW) * 100}%;top:${(b.y / gridH) * 100}%;` +
-        `width:${(b.w / gridW) * 100}%;height:${(b.h / gridH) * 100}%;`;
-      overlay.appendChild(box);
+  // Mask layer: translucent red on every gutter pixel.
+  if (overlayDisplay.mask) {
+    const cvs = document.createElement('canvas');
+    cvs.width = gridW;
+    cvs.height = gridH;
+    cvs.style.cssText = overlayStyle;
+    const cctx = cvs.getContext('2d');
+    const img = cctx.createImageData(gridW, gridH);
+    for (let i = 0; i < N; i++) {
+      if (!gutterMask[i]) continue;
+      const o = i * 4;
+      img.data[o + 0] = 255;
+      img.data[o + 1] = 80;
+      img.data[o + 2] = 80;
+      img.data[o + 3] = 100;
+    }
+    cctx.putImageData(img, 0, 0);
+    overlay.appendChild(cvs);
+  }
+
+  // Region layer: each connected component is painted in its natural
+  // pixel shape (not as a bbox). Outline pixels (any 4-neighbor has a
+  // different label, including the grid edge) get the region's color at
+  // high alpha when `boxes` is on; interior pixels get a translucent
+  // fill of the same color when `colors` is on. Each region cycles
+  // through REGION_COLORS by its id.
+  if (overlayDisplay.boxes || overlayDisplay.colors) {
+    const { labels, regions } = detectPixelRegions(gutterMask, gridW, gridH);
+    if (regions.length) {
+      const cvs = document.createElement('canvas');
+      cvs.width = gridW;
+      cvs.height = gridH;
+      cvs.style.cssText = overlayStyle;
+      const cctx = cvs.getContext('2d');
+      const img = cctx.createImageData(gridW, gridH);
+
+      for (let y = 0; y < gridH; y++) {
+        for (let x = 0; x < gridW; x++) {
+          const idx = y * gridW + x;
+          const lbl = labels[idx];
+          if (!lbl) continue;
+          const color = REGION_COLORS[(lbl - 1) % REGION_COLORS.length];
+
+          const isBoundary =
+            (x === 0)         || labels[idx - 1]     !== lbl ||
+            (x === gridW - 1) || labels[idx + 1]     !== lbl ||
+            (y === 0)         || labels[idx - gridW] !== lbl ||
+            (y === gridH - 1) || labels[idx + gridW] !== lbl;
+
+          let alpha = 0;
+          if (isBoundary && overlayDisplay.boxes) alpha = 220;
+          else if (!isBoundary && overlayDisplay.colors) alpha = 60;
+          if (!alpha) continue;
+
+          const o = idx * 4;
+          img.data[o + 0] = color[0];
+          img.data[o + 1] = color[1];
+          img.data[o + 2] = color[2];
+          img.data[o + 3] = alpha;
+        }
+      }
+
+      cctx.putImageData(img, 0, 0);
+      overlay.appendChild(cvs);
     }
   }
 }

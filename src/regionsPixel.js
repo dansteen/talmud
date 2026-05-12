@@ -129,26 +129,36 @@ export function detectGutters(grid, gridW, gridH, opts = {}) {
   return out;
 }
 
-// ── Region bboxes ───────────────────────────────────────────────────────
+// ── Region detection ────────────────────────────────────────────────────
 //
 // 4-connected components of non-gutter pixels. The gutter mask already
 // includes the page margins (they're long empty runs), so the surviving
-// components are the demarcated content areas. Each is returned as a
-// pixel-space bbox plus the component's pixel area.
-export function detectRegionBoxes(gutterMask, gridW, gridH, opts = {}) {
+// components are the demarcated content areas.
+//
+// Returns:
+//   labels  — Int32Array (gridW × gridH); 0 = gutter or filtered-out
+//             component, otherwise the region's sequential id (1..N).
+//   regions — [{ id, x, y, w, h, area }] — bbox + pixel area per region.
+//
+// Components smaller than `minArea` pixels are dropped (page numbers,
+// stray marks). The labels grid is renumbered so surviving ids are
+// contiguous (1..regions.length), so callers can use the id directly
+// as a color index.
+export function detectRegions(gutterMask, gridW, gridH, opts = {}) {
   const minArea = opts.minArea ?? 2000;
-  const labels = new Int32Array(gridW * gridH);
-  const queue = new Int32Array(gridW * gridH);
-  const boxes = [];
+  const N = gridW * gridH;
+  const tempLabels = new Int32Array(N);
+  const queue = new Int32Array(N);
+  const candidates = []; // {tempLabel, x, y, w, h, area}
   let nextLabel = 0;
 
   for (let y = 0; y < gridH; y++) {
     for (let x = 0; x < gridW; x++) {
       const startIdx = y * gridW + x;
-      if (gutterMask[startIdx] || labels[startIdx]) continue;
+      if (gutterMask[startIdx] || tempLabels[startIdx]) continue;
 
       nextLabel++;
-      labels[startIdx] = nextLabel;
+      tempLabels[startIdx] = nextLabel;
       let head = 0, tail = 0;
       queue[tail++] = startIdx;
 
@@ -166,33 +176,44 @@ export function detectRegionBoxes(gutterMask, gridW, gridH, opts = {}) {
 
         if (cx > 0) {
           const n = cur - 1;
-          if (!gutterMask[n] && !labels[n]) { labels[n] = nextLabel; queue[tail++] = n; }
+          if (!gutterMask[n] && !tempLabels[n]) { tempLabels[n] = nextLabel; queue[tail++] = n; }
         }
         if (cx < gridW - 1) {
           const n = cur + 1;
-          if (!gutterMask[n] && !labels[n]) { labels[n] = nextLabel; queue[tail++] = n; }
+          if (!gutterMask[n] && !tempLabels[n]) { tempLabels[n] = nextLabel; queue[tail++] = n; }
         }
         if (cy > 0) {
           const n = cur - gridW;
-          if (!gutterMask[n] && !labels[n]) { labels[n] = nextLabel; queue[tail++] = n; }
+          if (!gutterMask[n] && !tempLabels[n]) { tempLabels[n] = nextLabel; queue[tail++] = n; }
         }
         if (cy < gridH - 1) {
           const n = cur + gridW;
-          if (!gutterMask[n] && !labels[n]) { labels[n] = nextLabel; queue[tail++] = n; }
+          if (!gutterMask[n] && !tempLabels[n]) { tempLabels[n] = nextLabel; queue[tail++] = n; }
         }
       }
 
-      if (area >= minArea) {
-        boxes.push({
-          x: xMin,
-          y: yMin,
-          w: xMax - xMin + 1,
-          h: yMax - yMin + 1,
-          area,
-        });
-      }
+      candidates.push({
+        tempLabel: nextLabel,
+        x: xMin, y: yMin,
+        w: xMax - xMin + 1, h: yMax - yMin + 1,
+        area,
+      });
     }
   }
 
-  return boxes;
+  // Filter & renumber. remap[tempLabel] = final id (0 if filtered out).
+  const remap = new Int32Array(nextLabel + 1);
+  const regions = [];
+  for (const c of candidates) {
+    if (c.area < minArea) continue;
+    const id = regions.length + 1;
+    remap[c.tempLabel] = id;
+    regions.push({ id, x: c.x, y: c.y, w: c.w, h: c.h, area: c.area });
+  }
+
+  // Build the final labels grid (in-place over tempLabels since we won't
+  // need the originals again).
+  for (let i = 0; i < N; i++) tempLabels[i] = remap[tempLabels[i]];
+
+  return { labels: tempLabels, regions };
 }

@@ -617,9 +617,9 @@ function autoTuneAndApply(baseOpts) {
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'minShort',      label: 'minShort (px)',  min: 0,    max: 50,   step: 1, def: 1 },
+  { key: 'minShort',      label: 'minShort (px)',  min: 0,    max: 50,   step: 1, def: 9 },
   { key: 'minLong',       label: 'minLong (px)',   min: 0,    max: 1000, step: 1, def: 50 },
-  { key: 'darkThreshold', label: 'darkThreshold',  min: 0,    max: 255,  step: 1, def: 130 },
+  { key: 'darkThreshold', label: 'darkThreshold',  min: 0,    max: 255,  step: 1, def: 150 },
 ];
 
 let panelStatusEl = null;
@@ -853,11 +853,11 @@ function drawRegionOverlay() {
 
   // The grid is 1:1 with the rendered image — one cell per pixel. The
   // darkThreshold slider controls which pixels count as "ink."
-  const darkThreshold = regionOpts.darkThreshold ?? 130;
+  const darkThreshold = regionOpts.darkThreshold ?? 150;
   const { grid, gridW, gridH } = buildGridFromImageData(pixelImageData, darkThreshold);
   currentGrid = { gridW, gridH };
 
-  const minShort = regionOpts.minShort ?? 1;
+  const minShort = regionOpts.minShort ?? 9;
   const minLong  = regionOpts.minLong  ?? 50;
   const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong });
 

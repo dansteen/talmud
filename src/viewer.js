@@ -1,7 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { detectRegions } from './regions.js';
-import { renderPdfToImageData, buildGridFromImageData, detectGutters } from './regionsPixel.js';
+import { renderPdfToImageData, buildGridFromImageData, detectGutters, detectRegionBoxes } from './regionsPixel.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -882,6 +882,24 @@ function drawRegionOverlay() {
   }
   mctx.putImageData(img, 0, 0);
   overlay.appendChild(mask);
+
+  // Region bboxes: 4-connected components of non-gutter pixels. The
+  // gutter mask already includes the page margins, so the surviving
+  // components are the demarcated content areas (gemara, Rashi, Tosafos,
+  // …). Draw each as a green outline; sized in % so the overlay scales
+  // with the page.
+  if (overlayDisplay.boxes) {
+    const boxes = detectRegionBoxes(gutterMask, gridW, gridH);
+    for (const b of boxes) {
+      const box = document.createElement('div');
+      box.style.cssText =
+        'position:absolute;box-sizing:border-box;pointer-events:none;' +
+        'border:2px solid rgba(80,255,130,0.85);' +
+        `left:${(b.x / gridW) * 100}%;top:${(b.y / gridH) * 100}%;` +
+        `width:${(b.w / gridW) * 100}%;height:${(b.h / gridH) * 100}%;`;
+      overlay.appendChild(box);
+    }
+  }
 }
 
 // Snapshot of the current view in PDF-coordinate units that survives the

@@ -128,3 +128,71 @@ export function detectGutters(grid, gridW, gridH, opts = {}) {
 
   return out;
 }
+
+// ── Region bboxes ───────────────────────────────────────────────────────
+//
+// 4-connected components of non-gutter pixels. The gutter mask already
+// includes the page margins (they're long empty runs), so the surviving
+// components are the demarcated content areas. Each is returned as a
+// pixel-space bbox plus the component's pixel area.
+export function detectRegionBoxes(gutterMask, gridW, gridH, opts = {}) {
+  const minArea = opts.minArea ?? 2000;
+  const labels = new Int32Array(gridW * gridH);
+  const queue = new Int32Array(gridW * gridH);
+  const boxes = [];
+  let nextLabel = 0;
+
+  for (let y = 0; y < gridH; y++) {
+    for (let x = 0; x < gridW; x++) {
+      const startIdx = y * gridW + x;
+      if (gutterMask[startIdx] || labels[startIdx]) continue;
+
+      nextLabel++;
+      labels[startIdx] = nextLabel;
+      let head = 0, tail = 0;
+      queue[tail++] = startIdx;
+
+      let xMin = x, xMax = x, yMin = y, yMax = y, area = 0;
+
+      while (head < tail) {
+        const cur = queue[head++];
+        area++;
+        const cy = (cur / gridW) | 0;
+        const cx = cur - cy * gridW;
+        if (cx < xMin) xMin = cx;
+        if (cx > xMax) xMax = cx;
+        if (cy < yMin) yMin = cy;
+        if (cy > yMax) yMax = cy;
+
+        if (cx > 0) {
+          const n = cur - 1;
+          if (!gutterMask[n] && !labels[n]) { labels[n] = nextLabel; queue[tail++] = n; }
+        }
+        if (cx < gridW - 1) {
+          const n = cur + 1;
+          if (!gutterMask[n] && !labels[n]) { labels[n] = nextLabel; queue[tail++] = n; }
+        }
+        if (cy > 0) {
+          const n = cur - gridW;
+          if (!gutterMask[n] && !labels[n]) { labels[n] = nextLabel; queue[tail++] = n; }
+        }
+        if (cy < gridH - 1) {
+          const n = cur + gridW;
+          if (!gutterMask[n] && !labels[n]) { labels[n] = nextLabel; queue[tail++] = n; }
+        }
+      }
+
+      if (area >= minArea) {
+        boxes.push({
+          x: xMin,
+          y: yMin,
+          w: xMax - xMin + 1,
+          h: yMax - yMin + 1,
+          area,
+        });
+      }
+    }
+  }
+
+  return boxes;
+}

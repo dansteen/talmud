@@ -622,11 +622,11 @@ function autoTuneAndApply(baseOpts) {
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'minShort',      label: 'minShort',      min: 0,    max: 20,   step: 1,    def: 1 },
-  { key: 'minLong',       label: 'minLong',       min: 0,    max: 200,  step: 1,    def: 10 },
-  { key: 'emptyFrac',     label: 'emptyFrac',     min: 0,    max: 1,    step: 0.1,  def: 0.7 },
-  { key: 'cellMult',      label: 'cellMult',      min: 0.1,  max: 1,    step: 0.1,  def: 1 },
-  { key: 'darkThreshold', label: 'darkThreshold', min: 0,    max: 255,  step: 1,    def: 130 },
+  { key: 'minShort',      label: 'minShort (px)',  min: 0,    max: 50,   step: 1,    def: 1 },
+  { key: 'minLong',       label: 'minLong (px)',   min: 0,    max: 1000, step: 1,    def: 50 },
+  { key: 'emptyFrac',     label: 'emptyFrac',      min: 0,    max: 1,    step: 0.1,  def: 0.7 },
+  { key: 'cellMult',      label: 'cellMult (x)',   min: 0.1,  max: 1,    step: 0.1,  def: 1 },
+  { key: 'darkThreshold', label: 'darkThreshold',  min: 0,    max: 255,  step: 1,    def: 130 },
 ];
 
 let panelStatusEl = null;
@@ -712,10 +712,10 @@ function createRegionDebugPanel() {
   document.body.appendChild(panel);
   updateDebugPanelStatus();
 
-  // Track mouse position and report it as cell (x, y) coordinates against
-  // the current grid. The grid is shifted right by xOffset PDF points;
-  // pdfX = (relX / overlayWidth) * pageW, then cellX = (pdfX - xOffset) /
-  // cellSize. Out-of-grid positions show as -.
+  // Track mouse position and report it as grid (x, y) coordinates. X is
+  // a cell column (cellSize wide, anchored to the rightmost text edge).
+  // Y is a pixel row (cells are now 1 pixel tall in Y). Out-of-grid
+  // positions show as -.
   window.addEventListener('mousemove', (e) => {
     if (!mouseCoordEl) return;
     const rect = canvas.getBoundingClientRect();
@@ -730,7 +730,7 @@ function createRegionDebugPanel() {
     const pdfX = (relX / rect.width)  * pageW;
     const pdfY = (relY / rect.height) * pageH;
     const cellX = Math.floor((pdfX - xOffset) / cellSize);
-    const cellY = Math.floor(pdfY / cellSize);
+    const cellY = Math.floor(pdfY);
     if (cellX < 0 || cellX >= gridW) {
       mouseCoordEl.textContent = `cell: (-, ${cellY}) / ${gridW}×${gridH}`;
     } else {
@@ -886,8 +886,8 @@ function drawRegionOverlay() {
   currentGrid = { gridW, gridH, cellSize, xOffset };
 
   const minShort = regionOpts.minShort ?? 1;
-  const minLong  = regionOpts.minLong  ?? 10;
-  const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong });
+  const minLong  = regionOpts.minLong  ?? 50;
+  const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong, cellSize });
 
   // Paint gutter cells onto an offscreen canvas at grid resolution, then
   // scale up via CSS. image-rendering:pixelated keeps cell edges crisp.
@@ -916,20 +916,18 @@ function drawRegionOverlay() {
   mctx.putImageData(img, 0, 0);
   overlay.appendChild(mask);
 
-  // Optional: draw the cell grid as a CSS-only overlay. Position the same
-  // way as the canvas so tiles line up cell-for-cell.
+  // Optional: draw the X cell grid as vertical lines. Y is now at pixel
+  // resolution so there are no Y cell boundaries to draw.
   if (overlayDisplay.cells) {
     const tileW = 100 / gridW;
-    const tileH = 100 / gridH;
     const gridDiv = document.createElement('div');
     gridDiv.style.cssText =
       'position:absolute;top:0;height:100%;' +
       `left:${overlayLeftPct}%;width:${overlayWidthPct}%;` +
       'pointer-events:none;' +
       'background-image:' +
-        'linear-gradient(to right, rgba(80,160,255,0.4) 1px, transparent 1px),' +
-        'linear-gradient(to bottom, rgba(80,160,255,0.4) 1px, transparent 1px);' +
-      `background-size: ${tileW}% ${tileH}%;`;
+        'linear-gradient(to right, rgba(80,160,255,0.4) 1px, transparent 1px);' +
+      `background-size: ${tileW}% 100%;`;
     overlay.appendChild(gridDiv);
   }
 }

@@ -54,48 +54,48 @@ export function findRightmostColumnEdge(imageData, darkThreshold = 130, minOccup
   return W;
 }
 
-// `emptyFrac` is the fraction of pixels in a cell that must be empty for
-// the cell itself to count as empty. e.g. 0.75 means a cell is empty
-// when at least 75% of its pixels are blank.
+// Build an ANISOTROPIC cell grid: cells are `cellSize` wide in X and
+// `1 pixel` tall in Y. That gives pixel-resolution Y (so horizontal
+// gutters at any sub-cellSize y don't get quantized to a cell row) while
+// keeping X aligned to columns at `cellSize` granularity.
 //
-// `darkThreshold` is the per-pixel luminance below which the pixel counts
-// as "dark." Default 130 — catches mid-gray (≥50% stroke coverage) and
-// up. Lower values are stricter (only saturated ink counts).
+// `emptyFrac` is the fraction of pixels in a cell (a `cellSize × 1`
+// strip) that must be empty for the cell to count as empty. e.g. 0.7
+// means the cell is empty when fewer than 30% of its `cellSize` pixels
+// are dark.
 //
-// `xOffset` shifts the cell grid horizontally. With xOffset = anchor mod
-// cellSize, one cell boundary lands exactly on `anchor` (the right edge
-// of the rightmost text column). The leftmost sliver [0, xOffset) is
-// excluded from the grid.
+// `darkThreshold` is the per-pixel luminance below which the pixel
+// counts as "dark." Default 130 — catches mid-gray (≥50% stroke
+// coverage) and up.
+//
+// `xOffset` shifts the cell grid horizontally so one cell boundary
+// aligns with the right edge of the rightmost text column.
 export function buildGridFromImageData(imageData, cellSize, emptyFrac, darkThreshold = 130, xOffset = 0) {
   const imgW = imageData.width;
   const imgH = imageData.height;
   const pixels = imageData.data;
   const usableW = Math.max(0, imgW - xOffset);
   const gridW = Math.max(1, Math.ceil(usableW / cellSize));
-  const gridH = Math.max(1, Math.ceil(imgH / cellSize));
+  const gridH = imgH;  // one cell per pixel row
   const grid = new Uint8Array(gridW * gridH);
 
   const occupiedThreshold = 1 - emptyFrac;
 
   for (let cy = 0; cy < gridH; cy++) {
-    const y0 = Math.floor(cy * cellSize);
-    const y1 = Math.min(imgH, Math.ceil((cy + 1) * cellSize));
+    const rowBase = cy * imgW * 4;
+    const outBase = cy * gridW;
     for (let cx = 0; cx < gridW; cx++) {
       const x0 = Math.floor(xOffset + cx * cellSize);
       const x1 = Math.min(imgW, Math.ceil(xOffset + (cx + 1) * cellSize));
       if (x1 <= x0) continue;
       let dark = 0;
-      let total = 0;
-      for (let y = y0; y < y1; y++) {
-        const rowBase = y * imgW * 4;
-        for (let x = x0; x < x1; x++) {
-          const i = rowBase + x * 4;
-          const lum = Math.max(pixels[i], pixels[i + 1], pixels[i + 2]);
-          if (lum < darkThreshold) dark++;
-          total++;
-        }
+      const total = x1 - x0;
+      for (let x = x0; x < x1; x++) {
+        const i = rowBase + x * 4;
+        const lum = Math.max(pixels[i], pixels[i + 1], pixels[i + 2]);
+        if (lum < darkThreshold) dark++;
       }
-      if (total > 0 && dark / total > occupiedThreshold) grid[cy * gridW + cx] = 1;
+      if (dark / total > occupiedThreshold) grid[outBase + cx] = 1;
     }
   }
 
@@ -104,12 +104,24 @@ export function buildGridFromImageData(imageData, cellSize, emptyFrac, darkThres
 
 // ── 2D gutter detection ─────────────────────────────────────────────────
 
+// Run lengths are compared in PIXELS. Each cell is `cellSize` wide in X
+// (so a horizontal run of N cells covers N × cellSize pixels) and 1
+// pixel tall in Y (so a vertical run of N cells covers N pixels).
 export function detectGutters(grid, gridW, gridH, opts = {}) {
   const minShort = opts.minShort ?? 1;
-  const minLong  = opts.minLong  ?? 10;
+  const minLong  = opts.minLong  ?? 50;
+  const cellSize = opts.cellSize ?? 1;
+
+  // Min run length in CELLS for each direction. Vertical runs count
+  // cells where each cell = 1 px; horizontal runs count cells where
+  // each cell = cellSize px.
+  const minLongCellsV = Math.max(1, Math.ceil(minLong));
+  const minLongCellsH = Math.max(1, Math.ceil(minLong / cellSize));
+  const minShortCellsH = Math.max(1, Math.ceil(minShort));            // y stack
+  const minShortCellsV = Math.max(1, Math.ceil(minShort / cellSize));  // x stack
 
   // Step 1a: hMark[i] = 1 iff cell i is empty AND lies inside a horizontal
-  // run of empty cells whose length ≥ minLong.
+  // run of empty cells whose pixel-length ≥ minLong (cells × cellSize).
   const hMark = new Uint8Array(gridW * gridH);
   for (let y = 0; y < gridH; y++) {
     const base = y * gridW;
@@ -119,7 +131,7 @@ export function detectGutters(grid, gridW, gridH, opts = {}) {
       if (isEmpty) {
         if (runStart < 0) runStart = x;
       } else if (runStart >= 0) {
-        if (x - runStart >= minLong) {
+        if (x - runStart >= minLongCellsH) {
           for (let xx = runStart; xx < x; xx++) hMark[base + xx] = 1;
         }
         runStart = -1;
@@ -128,7 +140,7 @@ export function detectGutters(grid, gridW, gridH, opts = {}) {
   }
 
   // Step 1b: vMark[i] = 1 iff cell i is empty AND lies inside a vertical
-  // run of empty cells whose length ≥ minLong.
+  // run of empty cells (1 px each) whose length ≥ minLong px.
   const vMark = new Uint8Array(gridW * gridH);
   for (let x = 0; x < gridW; x++) {
     let runStart = -1;
@@ -137,7 +149,7 @@ export function detectGutters(grid, gridW, gridH, opts = {}) {
       if (isEmpty) {
         if (runStart < 0) runStart = y;
       } else if (runStart >= 0) {
-        if (y - runStart >= minLong) {
+        if (y - runStart >= minLongCellsV) {
           for (let yy = runStart; yy < y; yy++) vMark[yy * gridW + x] = 1;
         }
         runStart = -1;
@@ -147,9 +159,8 @@ export function detectGutters(grid, gridW, gridH, opts = {}) {
 
   const out = new Uint8Array(gridW * gridH);
 
-  // Step 2a: a cell is a horizontal gutter iff it's hMark AND lies inside
-  // a column-wise vertical stack of at least minShort consecutive hMark
-  // cells (so the long horizontal run has thickness ≥ minShort).
+  // Step 2a: a cell is a horizontal gutter iff hMark AND vertical (1 px
+  // per cell) stack of ≥ minShort pixels of consecutive hMark cells.
   for (let x = 0; x < gridW; x++) {
     let runStart = -1;
     for (let y = 0; y <= gridH; y++) {
@@ -157,7 +168,7 @@ export function detectGutters(grid, gridW, gridH, opts = {}) {
       if (isMarked) {
         if (runStart < 0) runStart = y;
       } else if (runStart >= 0) {
-        if (y - runStart >= minShort) {
+        if (y - runStart >= minShortCellsH) {
           for (let yy = runStart; yy < y; yy++) out[yy * gridW + x] = 1;
         }
         runStart = -1;
@@ -165,8 +176,9 @@ export function detectGutters(grid, gridW, gridH, opts = {}) {
     }
   }
 
-  // Step 2b: same for vertical gutters — vMark in a row-wise horizontal
-  // stack of at least minShort consecutive vMark cells.
+  // Step 2b: a cell is a vertical gutter iff vMark AND horizontal
+  // (cellSize px per cell) stack of ≥ minShort pixels of consecutive
+  // vMark cells.
   for (let y = 0; y < gridH; y++) {
     const base = y * gridW;
     let runStart = -1;
@@ -175,7 +187,7 @@ export function detectGutters(grid, gridW, gridH, opts = {}) {
       if (isMarked) {
         if (runStart < 0) runStart = x;
       } else if (runStart >= 0) {
-        if (x - runStart >= minShort) {
+        if (x - runStart >= minShortCellsV) {
           for (let xx = runStart; xx < x; xx++) out[base + xx] = 1;
         }
         runStart = -1;

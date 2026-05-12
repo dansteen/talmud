@@ -1,6 +1,6 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { detectRegions } from './regions.js';
+import { detectRegions as detectTextRegions } from './regions.js';
 import {
   renderPdfToImageData,
   buildGridFromImageData,
@@ -68,13 +68,26 @@ let regionsData = null;
 // slider tweaks can rebuild the grid without re-rendering the PDF.
 let pixelImageData = null;
 
-// Set per page during loadPage from computeTextData. Drives the auto-tuner's
-// expected region count (perek-end pages have ~double the regions).
-let pageIsPerekEnd = false;
-
-// Diagnostics from the most recent auto-tune attempt — surfaced in the debug
-// panel.
-let lastTuneInfo = null;
+// Hybrid pipeline config: which methods to apply and in what order. Each
+// method either runs on the full page (first pass) or refines the regions
+// produced by the previous pass (second pass).
+const HYBRID_KEY = 'regionHybridConfig';
+const hybrid = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(HYBRID_KEY) || 'null');
+    if (saved && typeof saved === 'object') {
+      return {
+        pixel: saved.pixel !== false,
+        text:  !!saved.text,
+        order: saved.order === 'text,pixel' ? 'text,pixel' : 'pixel,text',
+      };
+    }
+  } catch {}
+  return { pixel: true, text: false, order: 'pixel,text' };
+})();
+function persistHybrid() {
+  try { localStorage.setItem(HYBRID_KEY, JSON.stringify(hybrid)); } catch {}
+}
 
 // Visual transform applied to the canvas via CSS
 export const view = {
@@ -350,20 +363,11 @@ export async function loadPage(url, savedViewState = null) {
   const data = await computeTextData(currentPdfPage);
   textItems = data.items;
   textBbox = data.textBbox;
-  pageIsPerekEnd = data.perekEnd;
 
-  // Pixel-based region detection: render the page off-screen at scale 1
-  // and build an occupancy grid from the actual rendered ink (text glyphs,
-  // rule lines, decorative borders). Connected components on this grid
-  // produces regions whose shapes match what's visible, with no auto-tune
-  // ladder, no target count, and no font-name guessing. textItems are
-  // still passed in so each region can be labeled with median fontSize
-  // and item count.
-  // Render the PDF off-screen once per page; the grid is rebuilt later
-  // (in drawRegionOverlay) using whatever darkThreshold the slider is at,
-  // so re-tuning doesn't require re-rendering.
+  // Render the PDF off-screen once per page; the binary grid is rebuilt
+  // by the hybrid driver each time a slider changes.
   ({ imageData: pixelImageData } = await renderPdfToImageData(currentPdfPage));
-  applyPixelDetection(regionTuneFromUrl());
+  applyHybrid(regionTuneFromUrl());
 
   // If we have a saved zoom/center for this page, render at that scale and
   // place the saved center at the screen center. Otherwise default to home
@@ -388,243 +392,197 @@ export async function loadPage(url, savedViewState = null) {
 let regionOpts = {};
 
 function recomputeRegions(opts) {
-  applyPixelDetection(opts);
+  applyHybrid(opts);
 }
 
-// Just rebuild the overlay. drawRegionOverlay rebuilds the cell grid
-// from the cached pixel data using the current slider settings, then
-// paints gutter cells. No region detection on this branch — gutters
-// only.
-function applyPixelDetection(opts) {
-  if (opts) regionOpts = { ...regionOpts, ...opts };
-  regionsData = null;
-  regions = null;
-  if (DEBUG_REGIONS) {
-    syncDebugPanelSliders();
-    updateDebugPanelStatus();
-  }
-  drawRegionOverlay();
-}
-
-// ── Auto-tuner ──────────────────────────────────────────────────────────
+// ── Hybrid region detection (pixel + text, sequential refinement) ───────
 //
-// After a page loads, run the detector with a small ladder of overrides on
-// top of the base options (URL params, if any) and pick the attempt whose
-// significant-region count best matches expectations. "Significant" means
-// the region isn't a stray catchword / running head / page number — those
-// are filtered before counting (they still appear in the result).
-//
-// Expected counts:
-//   - normal page:    4-5 regions (target 5; bias toward 5)
-//   - perek-end page: 8-10 regions (target 9)
-//
-// Strategy: try defaults first, then increasing closeRadiusY (bridges
-// line gaps within a column without bridging columns), then variants that
-// drop side closing (separates side meforshim from gemara). Selection is
-// tiered: clean in-range > overmerged in-range > clean out-of-range >
-// overmerged out-of-range, ties broken by closeness to target. We never
-// invent a synthetic single-region result — the natural detection output
-// is always more useful than collapsing the page into one region.
+// Each enabled method runs in order. The first method runs on the whole
+// page; the second refines each first-pass region by running restricted
+// to that region's pixel mask. A refinement that yields fewer than two
+// sub-regions leaves the parent unchanged (no narrowing).
 
-// Sweep every integer Y from 1..10 (Y=0 is the default = attempt 1) and
-// every integer YSide reduction from 4..0 (YSide=5 is the default).
-// Skipping values misses pages whose sweet spot lands on the skipped
-// integer; the cost of a few extra detectRegions calls is small and the
-// auto-tuner early-exits the moment it finds a perfect match.
-function buildTuningAttempts() {
-  const attempts = [null];                                 // defaults (Y=0, YSide=5)
-  for (let y = 1; y <= 10; y++) attempts.push({ closeRadiusY: y });
-  for (let s = 4; s >= 0; s--) attempts.push({ closeRadiusYSide: s });
-  attempts.push({ closeRadiusY: 0, closeRadiusYSide: 0 });  // drop everything
-  return attempts;
-}
-const TUNING_ATTEMPTS = buildTuningAttempts();
-
-// Extra attempts run only when the basic ladder shows side-over-segmentation
-// (a side column split into multiple non-stray pieces). We bump
-// closeRadiusYSide above the default to bridge wider line gaps inside the
-// side column. The overmerge-width check protects us from picking a value
-// so large that the left and right columns fuse via a vertical strip.
-const SIDE_ESCALATION_ATTEMPTS = [
-  { closeRadiusYSide: 6 },
-  { closeRadiusYSide: 7 },
-  { closeRadiusYSide: 8 },
-  { closeRadiusYSide: 10 },
-  { closeRadiusYSide: 12 },
-  { closeRadiusYSide: 15 },
-  { closeRadiusYSide: 20 },
-];
-
-// A region is "stray" if it's almost certainly noise we don't want to count
-// against the target — page numbers, running heads, catchwords, and thin
-// fragmentary slivers. Cases:
-//   - very thin (< ~2% of page height) — single-line slivers anywhere on
-//     the page; legitimate columns are always many lines tall
-//   - small blob (narrow AND short) — page numbers, marginal marks
-//   - thin line near the top or bottom edge — running heads, catchwords
-// Tall narrow regions are NOT stray: side meforshim (Tosafot, Mesores
-// HaShas, Ein Mishpat) sit in narrow columns and are full-height.
-function isStrayRegion(r) {
-  const wRel = r.bbox.w / pageW;
-  const hRel = r.bbox.h / pageH;
-  const yCenter = (r.bbox.y + r.bbox.h / 2) / pageH;
-  if (hRel < 0.02) return true;
-  if (wRel < 0.08 && hRel < 0.20) return true;
-  if (hRel < 0.04 && (yCenter < 0.10 || yCenter > 0.90)) return true;
-  return false;
+function fullPageMask(N) {
+  const m = new Uint8Array(N);
+  m.fill(1);
+  return m;
 }
 
-function countSignificantRegions(regs) {
-  let n = 0;
-  for (const r of regs) if (!isStrayRegion(r)) n++;
-  return n;
-}
-
-// Reject a tuning result that contains a non-stray region wider than this
-// fraction of the page — the legitimate gemara column tops out around ~50%
-// of page width on a 3-column daf, so anything wider is almost certainly a
-// gemara+rashi (or gemara+tosafot) merge.
-const OVERMERGED_WIDTH_FRAC = 0.55;
-
-function isOvermerged(regs) {
-  for (const r of regs) {
-    if (isStrayRegion(r)) continue;
-    if (r.bbox.w / pageW > OVERMERGED_WIDTH_FRAC) return true;
-  }
-  return false;
-}
-
-// A side column is "over-segmented" when more than one non-stray region's
-// centroid sits in the leftmost or rightmost ~15% of the page. Side
-// commentary text (Tosafot, Mesores HaShas, etc.) often has wider line
-// spacing than the gemara, so the default closing radius can leave each
-// physical paragraph as its own component. When this happens we want to
-// try higher closeRadiusYSide values to bridge those line gaps.
-const SIDE_BAND_FRAC = 0.15;
-
-function sideOverSegmented(regs) {
-  let left = 0, right = 0;
-  for (const r of regs) {
-    if (isStrayRegion(r)) continue;
-    const cx = (r.bbox.x + r.bbox.w / 2) / pageW;
-    if (cx < SIDE_BAND_FRAC) left++;
-    else if (cx > 1 - SIDE_BAND_FRAC) right++;
-  }
-  return left > 1 || right > 1;
-}
-
-function autoTuneAndApply(baseOpts) {
-  if (!textItems.length) {
-    regionOpts = { ...regionOpts, ...baseOpts };
-    regionsData = null;
-    regions = null;
-    lastTuneInfo = null;
-    if (DEBUG_REGIONS) {
-      syncDebugPanelSliders();
-      updateDebugPanelStatus();
+function bboxFromMask(mask, gridW, gridH) {
+  let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity, area = 0;
+  for (let y = 0; y < gridH; y++) {
+    const base = y * gridW;
+    for (let x = 0; x < gridW; x++) {
+      if (!mask[base + x]) continue;
+      area++;
+      if (x < xMin) xMin = x;
+      if (x > xMax) xMax = x;
+      if (y < yMin) yMin = y;
+      if (y > yMax) yMax = y;
     }
-    drawRegionOverlay();
-    return;
   }
-
-  const target = pageIsPerekEnd ? 9 : 5;
-  const minOk  = pageIsPerekEnd ? 8 : 4;
-  const maxOk  = pageIsPerekEnd ? 10 : 5;
-
-  const tries = [];
-  let chosen = null;
-
-  const runAttempt = (adj, idx) => {
-    const opts = adj === null ? { ...regionOpts, ...baseOpts }
-                              : { ...regionOpts, ...baseOpts, ...adj };
-    const data = detectRegions(textItems, pageW, pageH, opts);
-    const sig = countSignificantRegions(data.regions);
-    const overmerged = isOvermerged(data.regions);
-    const sideOver = sideOverSegmented(data.regions);
-    tries.push({ opts, data, sig, overmerged, sideOver, idx });
-    return tries[tries.length - 1];
+  if (area === 0) return null;
+  return {
+    bbox: { x: xMin, y: yMin, w: xMax - xMin + 1, h: yMax - yMin + 1 },
+    area,
   };
+}
 
-  for (let i = 0; i < TUNING_ATTEMPTS.length; i++) {
-    const t = runAttempt(TUNING_ATTEMPTS[i], i);
-    // Early exit on a "perfect" hit — exact target, no overmerge, sides not
-    // over-segmented.
-    if (t.sig === target && !t.overmerged && !t.sideOver) {
-      chosen = { ...t, status: 'matched-target', attempts: i + 1 };
-      break;
-    }
+function medianFontSizeInside(mask, gridW, gridH, items) {
+  const sizes = [];
+  for (const it of items) {
+    const cx = Math.floor(it.x + it.w / 2);
+    const cy = Math.floor(it.y + it.h / 2);
+    if (cx < 0 || cx >= gridW || cy < 0 || cy >= gridH) continue;
+    if (mask[cy * gridW + cx] && it.fontSize > 0) sizes.push(it.fontSize);
   }
+  if (!sizes.length) return 0;
+  sizes.sort((a, b) => a - b);
+  return sizes[sizes.length >> 1];
+}
 
-  // If any basic-ladder attempt showed side-over-segmentation, escalate by
-  // bumping closeRadiusYSide. This bridges the wider line gaps in a side
-  // commentary column without affecting the inner zone. Stop early on a
-  // perfect hit, same as the basic ladder.
-  if (!chosen && tries.some(t => t.sideOver)) {
-    const baseIdx = tries.length;
-    for (let i = 0; i < SIDE_ESCALATION_ATTEMPTS.length; i++) {
-      const t = runAttempt(SIDE_ESCALATION_ATTEMPTS[i], baseIdx + i);
-      if (t.sig === target && !t.overmerged && !t.sideOver) {
-        chosen = { ...t, status: 'matched-target', attempts: baseIdx + i + 1 };
-        break;
+// Pixel detection restricted to `parentMask`: pre-mask the grid so cells
+// outside the parent are treated as ink (gutters can't extend out), then
+// run gutter detection and CC. The CC pass also treats outside-parent as
+// gutter so components don't leak outward.
+function detectPixelWithin(parentMask, grid, gridW, gridH, opts) {
+  const N = gridW * gridH;
+  const restrictedGrid = new Uint8Array(N);
+  for (let i = 0; i < N; i++) restrictedGrid[i] = parentMask[i] ? grid[i] : 1;
+  const gutterMask = detectGutters(restrictedGrid, gridW, gridH, opts);
+  const ccBlock = new Uint8Array(N);
+  for (let i = 0; i < N; i++) ccBlock[i] = (gutterMask[i] || !parentMask[i]) ? 1 : 0;
+  const { labels, regions: regs } = detectPixelRegions(ccBlock, gridW, gridH);
+  const out = [];
+  for (const r of regs) {
+    const mask = new Uint8Array(N);
+    for (let i = 0; i < N; i++) if (labels[i] === r.id) mask[i] = 1;
+    out.push({ mask });
+  }
+  return out;
+}
+
+// Text-bbox detection restricted to `parentMask`: filter text items to
+// those whose centroid sits inside the parent, run regions.js on that
+// subset, then rasterize each text region into a pixel mask AND'd with
+// the parent.
+function detectTextWithin(parentMask, items, gridW, gridH, opts) {
+  const inside = [];
+  for (const it of items) {
+    const cx = Math.floor(it.x + it.w / 2);
+    const cy = Math.floor(it.y + it.h / 2);
+    if (cx < 0 || cx >= gridW || cy < 0 || cy >= gridH) continue;
+    if (parentMask[cy * gridW + cx]) inside.push(it);
+  }
+  if (inside.length === 0) return [];
+
+  const result = detectTextRegions(inside, pageW, pageH, opts);
+  if (!result.regions.length) return [];
+
+  const { labels: tLabels, gridW: tW, gridH: tH, cellSize: cs } = result;
+  const out = [];
+  for (const r of result.regions) {
+    const mask = new Uint8Array(gridW * gridH);
+    let hits = 0;
+    for (let y = 0; y < gridH; y++) {
+      const base = y * gridW;
+      const ty = Math.min(tH - 1, Math.floor(y / cs));
+      const tBase = ty * tW;
+      for (let x = 0; x < gridW; x++) {
+        if (!parentMask[base + x]) continue;
+        const tx = Math.min(tW - 1, Math.floor(x / cs));
+        if (tLabels[tBase + tx] === r.id) { mask[base + x] = 1; hits++; }
       }
     }
+    if (hits > 0) out.push({ mask });
+  }
+  return out;
+}
+
+function detectHybrid() {
+  if (!pixelImageData) {
+    return { regions: [], labels: null, gridW: 0, gridH: 0, cellSize: 1, grid: null, gutterMask: null };
+  }
+  const darkThreshold = regionOpts.darkThreshold ?? 150;
+  const minShort      = regionOpts.minShort      ?? 7;
+  const minLong       = regionOpts.minLong       ?? 50;
+
+  const { grid, gridW, gridH } = buildGridFromImageData(pixelImageData, darkThreshold);
+  const N = gridW * gridH;
+
+  // Gutter mask of the whole page, kept for the 'mask' visualization
+  // layer. Independent of which methods are enabled.
+  const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong });
+
+  const order = hybrid.order === 'text,pixel' ? ['text', 'pixel'] : ['pixel', 'text'];
+  const enabled = order.filter(m => hybrid[m]);
+
+  if (enabled.length === 0) {
+    return { regions: [], labels: new Int32Array(N), gridW, gridH, cellSize: 1, grid, gutterMask };
   }
 
-  if (!chosen) {
-    // Tiered preference, all over the same set of attempts. We never fall
-    // back to a synthetic single region — the natural detection result is
-    // always more useful than collapsing the page into one region, even
-    // when nothing fits the expected count cleanly. Within a tier, prefer
-    // attempts without side-over-segmentation, then closer-to-target.
-    const sortByCloseness = (a, b) => {
-      if (a.sideOver !== b.sideOver) return (a.sideOver ? 1 : 0) - (b.sideOver ? 1 : 0);
-      const da = Math.abs(a.sig - target);
-      const db = Math.abs(b.sig - target);
-      return da - db || a.idx - b.idx;
-    };
-    const pickBest = (filter, status) => {
-      const pool = tries.filter(filter);
-      if (!pool.length) return null;
-      pool.sort(sortByCloseness);
-      return { ...pool[0], status, attempts: tries.length };
-    };
-    chosen =
-      pickBest(t => t.sig >= minOk && t.sig <= maxOk && !t.overmerged, 'matched-range') ||
-      pickBest(t => t.sig >= minOk && t.sig <= maxOk,                  'matched-range-overmerged') ||
-      pickBest(t => !t.overmerged,                                      'out-of-range') ||
-      pickBest(() => true,                                              'out-of-range-overmerged');
+  let regionList = [{ mask: fullPageMask(N) }];
+  let firstPass = true;
+  for (const method of enabled) {
+    const next = [];
+    for (const parent of regionList) {
+      const sub = method === 'pixel'
+        ? detectPixelWithin(parent.mask, grid, gridW, gridH, { minShort, minLong })
+        : detectTextWithin (parent.mask, textItems, gridW, gridH, regionOpts);
+      const minToSplit = firstPass ? 1 : 2;
+      if (sub.length >= minToSplit) next.push(...sub);
+      else next.push(parent);
+    }
+    regionList = next;
+    firstPass = false;
   }
 
-  regionOpts = { ...regionOpts, ...chosen.opts };
-  regionsData = chosen.data;
-  regions = chosen.data.regions;
-  lastTuneInfo = {
-    status: chosen.status,
-    attempts: chosen.attempts,
-    sigCount: chosen.sig,
-    perekEnd: pageIsPerekEnd,
-  };
+  // Assign sequential ids; build a unified labels grid and per-region meta.
+  const labels = new Int32Array(N);
+  const finalRegions = [];
+  for (let i = 0; i < regionList.length; i++) {
+    const id = finalRegions.length + 1;
+    const mask = regionList[i].mask;
+    const info = bboxFromMask(mask, gridW, gridH);
+    if (!info) continue;
+    for (let p = 0; p < N; p++) if (mask[p]) labels[p] = id;
+    finalRegions.push({
+      id,
+      mask,
+      bbox: info.bbox,
+      area: info.area,
+      fontSize: medianFontSizeInside(mask, gridW, gridH, textItems),
+    });
+  }
 
+  return { regions: finalRegions, labels, gridW, gridH, cellSize: 1, grid, gutterMask };
+}
+
+function applyHybrid(opts) {
+  if (opts) regionOpts = { ...regionOpts, ...opts };
+  regionsData = detectHybrid();
+  regions = regionsData.regions;
+  currentGrid = { gridW: regionsData.gridW, gridH: regionsData.gridH };
   if (DEBUG_REGIONS) {
-    // eslint-disable-next-line no-console
-    console.log(
-      `[regions] auto-tune: ${chosen.status} · ${chosen.attempts} tries · sig=${chosen.sig}`,
-      pageIsPerekEnd ? '(perek-end)' : '',
-      `→ ${regions.length} raw regions`,
-      regions.map(r => `#${r.id} fs=${r.fontSize.toFixed(1)} cells=${r.pixelCount} items=${r.itemCount}${isStrayRegion(r) ? ' [stray]' : ''}`),
-    );
     syncDebugPanelSliders();
     updateDebugPanelStatus();
   }
   drawRegionOverlay();
 }
+
 
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'minShort',      label: 'minShort (px)',  min: 0, max: 50,   step: 1, def: 7 },
-  { key: 'minLong',       label: 'minLong (px)',   min: 0, max: 1000, step: 1, def: 50 },
-  { key: 'darkThreshold', label: 'darkThreshold',  min: 0, max: 255,  step: 1, def: 150 },
+  // Pixel method
+  { key: 'minShort',         label: 'minShort (px)',   min: 0,    max: 50,   step: 1,    def: 7 },
+  { key: 'minLong',          label: 'minLong (px)',    min: 0,    max: 1000, step: 1,    def: 50 },
+  { key: 'darkThreshold',    label: 'darkThreshold',   min: 0,    max: 255,  step: 1,    def: 150 },
+  // Text method
+  { key: 'cellSize',         label: 'text cellSize',   min: 0.5,  max: 6,    step: 0.5,  def: 1.5 },
+  { key: 'closeRadiusX',     label: 'closeRadiusX',    min: 0,    max: 20,   step: 1,    def: 0 },
+  { key: 'closeRadiusY',     label: 'closeRadiusY',    min: 0,    max: 20,   step: 1,    def: 0 },
+  { key: 'closeRadiusYSide', label: 'closeRadiusYSide',min: 0,    max: 20,   step: 1,    def: 5 },
 ];
 
 let panelStatusEl = null;
@@ -655,6 +613,27 @@ function createRegionDebugPanel() {
   title.style.cssText = 'font-weight:600;margin-bottom:6px;opacity:0.7;cursor:move;';
   panel.appendChild(title);
   enablePanelDrag(panel, title);
+
+  // Method selection: which detectors to apply and in what order.
+  const methodRow = document.createElement('div');
+  methodRow.style.cssText = 'display:flex;gap:10px;align-items:center;margin:2px 0 6px;';
+  methodRow.appendChild(makeToggle('pixel', hybrid.pixel, v => { hybrid.pixel = v; persistHybrid(); applyHybrid(); }));
+  methodRow.appendChild(makeToggle('text',  hybrid.text,  v => { hybrid.text  = v; persistHybrid(); applyHybrid(); }));
+  const orderSel = document.createElement('select');
+  orderSel.style.cssText = 'margin-left:auto;background:rgba(40,30,20,0.9);color:inherit;border:1px solid rgba(255,230,170,0.3);border-radius:3px;padding:1px 4px;font:inherit;';
+  for (const [val, lbl] of [['pixel,text', 'pixel → text'], ['text,pixel', 'text → pixel']]) {
+    const o = document.createElement('option');
+    o.value = val; o.textContent = lbl;
+    if (hybrid.order === val) o.selected = true;
+    orderSel.appendChild(o);
+  }
+  orderSel.addEventListener('change', () => {
+    hybrid.order = orderSel.value === 'text,pixel' ? 'text,pixel' : 'pixel,text';
+    persistHybrid();
+    applyHybrid();
+  });
+  methodRow.appendChild(orderSel);
+  panel.appendChild(methodRow);
 
   // Overlay visibility toggles. Grouped on one row to keep the panel compact.
   const toggleRow = document.createElement('div');
@@ -812,12 +791,10 @@ function updateDebugPanelStatus() {
   const lines = [];
   if (regionsData) {
     const { gridW, gridH, regions: regs } = regionsData;
+    const order = hybrid.order === 'text,pixel' ? ['text', 'pixel'] : ['pixel', 'text'];
+    const enabled = order.filter(m => hybrid[m]).join(' → ') || '(none)';
     lines.push(`${gridW}×${gridH} grid · ${regs.length} regions`);
-  }
-  if (lastTuneInfo) {
-    const t = lastTuneInfo;
-    const tag = t.perekEnd ? ' [perek-end]' : '';
-    lines.push(`tune: ${t.status} · ${t.attempts} ${t.attempts === 1 ? 'try' : 'tries'} · sig=${t.sigCount}${tag}`);
+    lines.push(`pipeline: ${enabled}`);
   }
   panelStatusEl.style.whiteSpace = 'pre-line';
   panelStatusEl.textContent = lines.join('\n');
@@ -848,34 +825,28 @@ const REGION_COLORS = [
   [200, 130, 255],  // violet
 ];
 
-// Render the labeled grid as a translucent pixel mask + per-region bbox
-// outlines. The pixel mask shows the actual non-rectangular region shape
-// (L's, T's, etc.); bbox outlines are useful for "this is what would be
-// the zoom target".
+// Render the hybrid detection result. Three independent layers:
+//   - mask:   translucent red on every gutter pixel (the raw output of
+//             the pixel gutter detector; survives method toggles so it
+//             always reflects what the pixel pass would see)
+//   - boxes:  per-region outline (any pixel whose 4-neighbor has a
+//             different label, including grid edges) at high alpha
+//   - colors: per-region translucent fill at low alpha
+// Each region cycles through REGION_COLORS by its id.
 function drawRegionOverlay() {
   if (!overlay) return;
   overlay.innerHTML = '';
-  if (!pixelImageData) return;
+  if (!regionsData || !regionsData.labels) return;
 
-  // The grid is 1:1 with the rendered image — one cell per pixel. The
-  // darkThreshold slider controls which pixels count as "ink."
-  const darkThreshold = regionOpts.darkThreshold ?? 150;
-  const minShort      = regionOpts.minShort      ?? 7;
-  const minLong       = regionOpts.minLong       ?? 50;
-
-  const { grid, gridW, gridH } = buildGridFromImageData(pixelImageData, darkThreshold);
-  currentGrid = { gridW, gridH };
-
-  const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong });
-
+  const { labels, gridW, gridH, gutterMask } = regionsData;
   const N = gridW * gridH;
   const overlayStyle =
     'position:absolute;top:0;left:0;width:100%;height:100%;' +
     'image-rendering:pixelated;image-rendering:crisp-edges;' +
     'pointer-events:none;';
 
-  // Mask layer: translucent red on every gutter pixel.
-  if (overlayDisplay.mask) {
+  // Mask layer.
+  if (overlayDisplay.mask && gutterMask) {
     const cvs = document.createElement('canvas');
     cvs.width = gridW;
     cvs.height = gridH;
@@ -894,51 +865,43 @@ function drawRegionOverlay() {
     overlay.appendChild(cvs);
   }
 
-  // Region layer: each connected component is painted in its natural
-  // pixel shape (not as a bbox). Outline pixels (any 4-neighbor has a
-  // different label, including the grid edge) get the region's color at
-  // high alpha when `boxes` is on; interior pixels get a translucent
-  // fill of the same color when `colors` is on. Each region cycles
-  // through REGION_COLORS by its id.
+  // Region layer (boxes + colors share one canvas).
   if (overlayDisplay.boxes || overlayDisplay.colors) {
-    const { labels, regions } = detectPixelRegions(gutterMask, gridW, gridH);
-    if (regions.length) {
-      const cvs = document.createElement('canvas');
-      cvs.width = gridW;
-      cvs.height = gridH;
-      cvs.style.cssText = overlayStyle;
-      const cctx = cvs.getContext('2d');
-      const img = cctx.createImageData(gridW, gridH);
+    const cvs = document.createElement('canvas');
+    cvs.width = gridW;
+    cvs.height = gridH;
+    cvs.style.cssText = overlayStyle;
+    const cctx = cvs.getContext('2d');
+    const img = cctx.createImageData(gridW, gridH);
 
-      for (let y = 0; y < gridH; y++) {
-        for (let x = 0; x < gridW; x++) {
-          const idx = y * gridW + x;
-          const lbl = labels[idx];
-          if (!lbl) continue;
-          const color = REGION_COLORS[(lbl - 1) % REGION_COLORS.length];
+    for (let y = 0; y < gridH; y++) {
+      for (let x = 0; x < gridW; x++) {
+        const idx = y * gridW + x;
+        const lbl = labels[idx];
+        if (!lbl) continue;
+        const color = REGION_COLORS[(lbl - 1) % REGION_COLORS.length];
 
-          const isBoundary =
-            (x === 0)         || labels[idx - 1]     !== lbl ||
-            (x === gridW - 1) || labels[idx + 1]     !== lbl ||
-            (y === 0)         || labels[idx - gridW] !== lbl ||
-            (y === gridH - 1) || labels[idx + gridW] !== lbl;
+        const isBoundary =
+          (x === 0)         || labels[idx - 1]     !== lbl ||
+          (x === gridW - 1) || labels[idx + 1]     !== lbl ||
+          (y === 0)         || labels[idx - gridW] !== lbl ||
+          (y === gridH - 1) || labels[idx + gridW] !== lbl;
 
-          let alpha = 0;
-          if (isBoundary && overlayDisplay.boxes) alpha = 220;
-          else if (!isBoundary && overlayDisplay.colors) alpha = 60;
-          if (!alpha) continue;
+        let alpha = 0;
+        if (isBoundary && overlayDisplay.boxes) alpha = 220;
+        else if (!isBoundary && overlayDisplay.colors) alpha = 60;
+        if (!alpha) continue;
 
-          const o = idx * 4;
-          img.data[o + 0] = color[0];
-          img.data[o + 1] = color[1];
-          img.data[o + 2] = color[2];
-          img.data[o + 3] = alpha;
-        }
+        const o = idx * 4;
+        img.data[o + 0] = color[0];
+        img.data[o + 1] = color[1];
+        img.data[o + 2] = color[2];
+        img.data[o + 3] = alpha;
       }
-
-      cctx.putImageData(img, 0, 0);
-      overlay.appendChild(cvs);
     }
+
+    cctx.putImageData(img, 0, 0);
+    overlay.appendChild(cvs);
   }
 }
 

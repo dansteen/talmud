@@ -453,8 +453,19 @@ function mergeSideColumns(regions, gridW, gridH, sideFrac) {
     return regions;
   }
 
-  const leftThresh  = sideFrac * gridW;
-  const rightThresh = (1 - sideFrac) * gridW;
+  // Thresholds are relative to the actual extent of detected regions,
+  // not the raw page width. Many PDFs have large empty page margins
+  // that would push the right threshold way past the rightmost content,
+  // so a centroid-based check against gridW alone misses the side
+  // columns even when they're clearly at the edge of the text area.
+  let xMin = Infinity, xMax = -Infinity;
+  for (const r of regions) {
+    if (r.bbox.x < xMin) xMin = r.bbox.x;
+    if (r.bbox.x + r.bbox.w > xMax) xMax = r.bbox.x + r.bbox.w;
+  }
+  const activeW = xMax - xMin;
+  const leftThresh  = xMin + sideFrac * activeW;
+  const rightThresh = xMax - sideFrac * activeW;
   const leftIdx = [], rightIdx = [], otherIdx = [];
   regions.forEach((r, idx) => {
     const cx = r.bbox.x + r.bbox.w / 2;

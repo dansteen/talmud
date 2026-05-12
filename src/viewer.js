@@ -90,6 +90,9 @@ function persistHybrid() {
   try { localStorage.setItem(HYBRID_KEY, JSON.stringify(hybrid)); } catch {}
 }
 
+// Diagnostic counters from the most recent side-column merge attempt.
+let lastMergeStats = null;
+
 // Visual transform applied to the canvas via CSS
 export const view = {
   scale: 1,  // visual scale on top of the canvas's natural CSS size
@@ -442,7 +445,13 @@ function bboxFromMask(mask, gridW, gridH) {
 // shows per-fragment outlines, because gutter pixels (label 0) between
 // fragments form a boundary on every fragment edge.
 function mergeSideColumns(regions, gridW, gridH, sideFrac) {
-  if (sideFrac <= 0 || regions.length < 2) return regions;
+  if (sideFrac <= 0 || regions.length < 2) {
+    if (DEBUG_REGIONS) {
+      // eslint-disable-next-line no-console
+      console.log('[merge] skipped', { sideFrac, regions: regions.length });
+    }
+    return regions;
+  }
 
   const leftThresh  = sideFrac * gridW;
   const rightThresh = (1 - sideFrac) * gridW;
@@ -453,6 +462,24 @@ function mergeSideColumns(regions, gridW, gridH, sideFrac) {
     else if (cx > rightThresh) rightIdx.push(idx);
     else                       otherIdx.push(idx);
   });
+
+  if (DEBUG_REGIONS) {
+    // eslint-disable-next-line no-console
+    console.log('[merge]', {
+      gridW,
+      sideFrac,
+      leftThresh,
+      rightThresh,
+      regions: regions.map((r, i) => ({
+        idx: i,
+        cx: r.bbox.x + r.bbox.w / 2,
+        bbox: r.bbox,
+        bucket: leftIdx.includes(i) ? 'left' : rightIdx.includes(i) ? 'right' : 'middle',
+      })),
+      groups: { left: leftIdx.length, right: rightIdx.length, middle: otherIdx.length },
+    });
+  }
+  lastMergeStats = { pre: regions.length, left: leftIdx.length, right: rightIdx.length, middle: otherIdx.length };
 
   const N = gridW * gridH;
   const mergeGroup = (indices) => {
@@ -610,6 +637,7 @@ function detectHybrid() {
   // Post-process: collapse fragmented side-column pieces into one region
   // per side. Gated by the `merge sides` checkbox; `sideFrac` is the
   // centroid threshold (slider).
+  lastMergeStats = null;
   const sideFrac = hybrid.sideMerge ? (regionOpts.sideFrac ?? 0.15) : 0;
   const merged = mergeSideColumns(withBbox, gridW, gridH, sideFrac);
 
@@ -871,6 +899,10 @@ function updateDebugPanelStatus() {
     const enabled = order.filter(m => hybrid[m]).join(' → ') || '(none)';
     lines.push(`${gridW}×${gridH} grid · ${regs.length} regions`);
     lines.push(`pipeline: ${enabled}`);
+    if (lastMergeStats) {
+      const s = lastMergeStats;
+      lines.push(`merge: pre=${s.pre} L=${s.left} M=${s.middle} R=${s.right} → post=${regs.length}`);
+    }
   }
   panelStatusEl.style.whiteSpace = 'pre-line';
   panelStatusEl.textContent = lines.join('\n');

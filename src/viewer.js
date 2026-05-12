@@ -4,6 +4,7 @@ import { detectRegions } from './regions.js';
 import {
   renderPdfToImageData,
   buildGridFromImageData,
+  cleanIsolatedInk,
   detectGutters,
   detectRegions as detectPixelRegions,
 } from './regionsPixel.js';
@@ -622,10 +623,11 @@ function autoTuneAndApply(baseOpts) {
 // ── Debug controls (?debug=1) ───────────────────────────────────────────
 
 const PANEL_CONTROLS = [
-  { key: 'minShort',      label: 'minShort (px)',  min: 0,    max: 50,   step: 1, def: 9 },
-  { key: 'minLong',       label: 'minLong (px)',   min: 0,    max: 1000, step: 1, def: 50 },
-  { key: 'inkBudget',     label: 'inkBudget (px)', min: 0,    max: 200,  step: 1, def: 0 },
-  { key: 'darkThreshold', label: 'darkThreshold',  min: 0,    max: 255,  step: 1, def: 150 },
+  { key: 'minShort',      label: 'minShort (px)',  min: 0, max: 50,    step: 1, def: 7 },
+  { key: 'minLong',       label: 'minLong (px)',   min: 0, max: 1000,  step: 1, def: 50 },
+  { key: 'dilateRadius',  label: 'inkDilate (px)', min: 0, max: 30,    step: 1, def: 5 },
+  { key: 'minInkArea',    label: 'minInkArea',     min: 0, max: 10000, step: 100, def: 2000 },
+  { key: 'darkThreshold', label: 'darkThreshold',  min: 0, max: 255,   step: 1, def: 150 },
 ];
 
 let panelStatusEl = null;
@@ -861,13 +863,21 @@ function drawRegionOverlay() {
   // The grid is 1:1 with the rendered image — one cell per pixel. The
   // darkThreshold slider controls which pixels count as "ink."
   const darkThreshold = regionOpts.darkThreshold ?? 150;
-  const { grid, gridW, gridH } = buildGridFromImageData(pixelImageData, darkThreshold);
+  const dilateRadius  = regionOpts.dilateRadius  ?? 5;
+  const minInkArea    = regionOpts.minInkArea    ?? 2000;
+  const minShort      = regionOpts.minShort      ?? 7;
+  const minLong       = regionOpts.minLong       ?? 50;
+
+  // Build the binary ink grid, then strip small isolated components
+  // (catchwords, page numbers, stray marks) before running the gutter
+  // detector. Dilation merges nearby letters so a "small component" is
+  // genuinely a small text island, not an individual letter.
+  const { grid: rawGrid, gridW, gridH } =
+    buildGridFromImageData(pixelImageData, darkThreshold);
+  const grid = cleanIsolatedInk(rawGrid, gridW, gridH, { dilateRadius, minInkArea });
   currentGrid = { gridW, gridH };
 
-  const minShort  = regionOpts.minShort  ?? 9;
-  const minLong   = regionOpts.minLong   ?? 50;
-  const inkBudget = regionOpts.inkBudget ?? 0;
-  const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong, inkBudget });
+  const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong });
 
   const N = gridW * gridH;
   const overlayStyle =

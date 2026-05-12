@@ -23,6 +23,95 @@ export async function renderPdfToImageData(pdfPage) {
   };
 }
 
+// ── Ink cleanup (small isolated component removal) ──────────────────────
+//
+// Dilate the ink mask by `dilateRadius` pixels (Chebyshev), find 4-CCs
+// in the dilated mask, and zero out any pixel whose component's area is
+// below `minArea`. Dilation merges adjacent letters and lines into a
+// single blob per word/paragraph/column, so a "small CC" is something
+// like a catchword or a page number sitting alone in a margin —
+// surrounded by enough empty space that even the dilation halo can't
+// reach the next real text block.
+//
+// `dilateRadius` should be larger than the typical inter-line gap so
+// neighboring lines of a real paragraph fuse into one CC.
+
+// Chebyshev dilation, separable: O(N) per axis using a distance-from-
+// last-ink tracker.
+function dilateMask(grid, gridW, gridH, r) {
+  const N = gridW * gridH;
+  if (r <= 0) return new Uint8Array(grid);
+  const horiz = new Uint8Array(N);
+  for (let y = 0; y < gridH; y++) {
+    const base = y * gridW;
+    let lastInk = -Infinity;
+    for (let x = 0; x < gridW; x++) {
+      if (grid[base + x]) lastInk = x;
+      if (x - lastInk <= r) horiz[base + x] = 1;
+    }
+    let nextInk = Infinity;
+    for (let x = gridW - 1; x >= 0; x--) {
+      if (grid[base + x]) nextInk = x;
+      if (nextInk - x <= r) horiz[base + x] = 1;
+    }
+  }
+  const out = new Uint8Array(N);
+  for (let x = 0; x < gridW; x++) {
+    let lastInk = -Infinity;
+    for (let y = 0; y < gridH; y++) {
+      if (horiz[y * gridW + x]) lastInk = y;
+      if (y - lastInk <= r) out[y * gridW + x] = 1;
+    }
+    let nextInk = Infinity;
+    for (let y = gridH - 1; y >= 0; y--) {
+      if (horiz[y * gridW + x]) nextInk = y;
+      if (nextInk - y <= r) out[y * gridW + x] = 1;
+    }
+  }
+  return out;
+}
+
+// Return a copy of `grid` with pixels in small dilated components zeroed.
+export function cleanIsolatedInk(grid, gridW, gridH, opts = {}) {
+  const dilateRadius = opts.dilateRadius ?? 5;
+  const minArea      = opts.minInkArea   ?? 2000;
+  const N = gridW * gridH;
+  if (dilateRadius <= 0 || minArea <= 0) return new Uint8Array(grid);
+
+  const dilated = dilateMask(grid, gridW, gridH, dilateRadius);
+  const labels = new Int32Array(N);
+  const queue = new Int32Array(N);
+  const areas = [0]; // areas[label] — index 0 unused (label ids start at 1)
+  let label = 0;
+
+  for (let i = 0; i < N; i++) {
+    if (!dilated[i] || labels[i]) continue;
+    label++;
+    labels[i] = label;
+    let head = 0, tail = 0;
+    queue[tail++] = i;
+    let area = 0;
+    while (head < tail) {
+      const cur = queue[head++];
+      area++;
+      const cy = (cur / gridW) | 0;
+      const cx = cur - cy * gridW;
+      if (cx > 0)         { const n = cur - 1;     if (dilated[n] && !labels[n]) { labels[n] = label; queue[tail++] = n; } }
+      if (cx < gridW - 1) { const n = cur + 1;     if (dilated[n] && !labels[n]) { labels[n] = label; queue[tail++] = n; } }
+      if (cy > 0)         { const n = cur - gridW; if (dilated[n] && !labels[n]) { labels[n] = label; queue[tail++] = n; } }
+      if (cy < gridH - 1) { const n = cur + gridW; if (dilated[n] && !labels[n]) { labels[n] = label; queue[tail++] = n; } }
+    }
+    areas.push(area);
+  }
+
+  const cleaned = new Uint8Array(N);
+  for (let i = 0; i < N; i++) {
+    if (!grid[i]) continue;
+    if (areas[labels[i]] >= minArea) cleaned[i] = 1;
+  }
+  return cleaned;
+}
+
 // Build the binary pixel grid: one cell per pixel. Cell is "occupied"
 // (grid[i] = 1) iff the pixel's max-channel luminance < darkThreshold.
 // Default 130 — catches mid-gray (≥50% stroke coverage) and up, ignores
@@ -48,61 +137,43 @@ export function buildGridFromImageData(imageData, darkThreshold = 130) {
 //
 // Both X and Y are at pixel resolution, so all run lengths are direct
 // pixel counts.
-//
-// `inkBudget` lets a run tolerate up to that many dark pixels without
-// breaking — bridges small obstructions like the catchword (the first
-// word of the next page that's dropped into the bottom margin). A
-// catchword is ~20–60 px wide; a real column is 200+ px, so a budget
-// well below column width skips catchwords without fusing columns.
 export function detectGutters(grid, gridW, gridH, opts = {}) {
-  const minShort  = Math.max(1, opts.minShort  ?? 1);
-  const minLong   = Math.max(1, opts.minLong   ?? 50);
-  const inkBudget = Math.max(0, opts.inkBudget ?? 0);
+  const minShort = Math.max(1, opts.minShort ?? 1);
+  const minLong  = Math.max(1, opts.minLong  ?? 50);
 
-  // Step 1a: hMark[i] = 1 iff cell i is inside a "mostly empty" horizontal
-  // run whose span (first-empty..last-empty) is ≥ minLong px and which
-  // contains ≤ inkBudget dark pixels. Tolerated dark pixels inside the
-  // span are marked too (so the gutter visually flows through them).
+  // Step 1a: hMark[i] = 1 iff cell i is empty AND lies inside a horizontal
+  // empty run of ≥ minLong pixels.
   const hMark = new Uint8Array(gridW * gridH);
   for (let y = 0; y < gridH; y++) {
     const base = y * gridW;
-    let runStart = -1, lastEmpty = -1, darkInRun = 0;
+    let runStart = -1;
     for (let x = 0; x <= gridW; x++) {
-      const inBounds = x < gridW;
-      const isEmpty = inBounds && grid[base + x] === 0;
+      const isEmpty = x < gridW && grid[base + x] === 0;
       if (isEmpty) {
-        if (runStart < 0) { runStart = x; darkInRun = 0; }
-        lastEmpty = x;
+        if (runStart < 0) runStart = x;
       } else if (runStart >= 0) {
-        if (inBounds) darkInRun++;
-        if (!inBounds || darkInRun > inkBudget) {
-          if (lastEmpty - runStart + 1 >= minLong) {
-            for (let xx = runStart; xx <= lastEmpty; xx++) hMark[base + xx] = 1;
-          }
-          runStart = -1;
+        if (x - runStart >= minLong) {
+          for (let xx = runStart; xx < x; xx++) hMark[base + xx] = 1;
         }
+        runStart = -1;
       }
     }
   }
 
-  // Step 1b: same for vertical runs.
+  // Step 1b: vMark[i] = 1 iff cell i is empty AND lies inside a vertical
+  // empty run of ≥ minLong pixels.
   const vMark = new Uint8Array(gridW * gridH);
   for (let x = 0; x < gridW; x++) {
-    let runStart = -1, lastEmpty = -1, darkInRun = 0;
+    let runStart = -1;
     for (let y = 0; y <= gridH; y++) {
-      const inBounds = y < gridH;
-      const isEmpty = inBounds && grid[y * gridW + x] === 0;
+      const isEmpty = y < gridH && grid[y * gridW + x] === 0;
       if (isEmpty) {
-        if (runStart < 0) { runStart = y; darkInRun = 0; }
-        lastEmpty = y;
+        if (runStart < 0) runStart = y;
       } else if (runStart >= 0) {
-        if (inBounds) darkInRun++;
-        if (!inBounds || darkInRun > inkBudget) {
-          if (lastEmpty - runStart + 1 >= minLong) {
-            for (let yy = runStart; yy <= lastEmpty; yy++) vMark[yy * gridW + x] = 1;
-          }
-          runStart = -1;
+        if (y - runStart >= minLong) {
+          for (let yy = runStart; yy < y; yy++) vMark[yy * gridW + x] = 1;
         }
+        runStart = -1;
       }
     }
   }

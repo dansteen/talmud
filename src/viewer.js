@@ -77,13 +77,14 @@ const hybrid = (() => {
     const saved = JSON.parse(localStorage.getItem(HYBRID_KEY) || 'null');
     if (saved && typeof saved === 'object') {
       return {
-        pixel: saved.pixel !== false,
-        text:  !!saved.text,
-        order: saved.order === 'text,pixel' ? 'text,pixel' : 'pixel,text',
+        pixel:     saved.pixel !== false,
+        text:      !!saved.text,
+        order:     saved.order === 'text,pixel' ? 'text,pixel' : 'pixel,text',
+        sideMerge: saved.sideMerge !== false,
       };
     }
   } catch {}
-  return { pixel: true, text: false, order: 'pixel,text' };
+  return { pixel: true, text: false, order: 'pixel,text', sideMerge: true };
 })();
 function persistHybrid() {
   try { localStorage.setItem(HYBRID_KEY, JSON.stringify(hybrid)); } catch {}
@@ -433,6 +434,13 @@ function bboxFromMask(mask, gridW, gridH) {
 // (Tosafot, Mesores HaShas) that wrap vertically into multiple
 // fragments; this collapses them back into a single column per side.
 // Middle-of-page regions are left alone.
+//
+// After OR'ing fragment masks together, vertical gaps are filled within
+// the merged bbox: at each x column, every pixel between the topmost and
+// bottommost ink pixel becomes part of the region. Without this fill,
+// the merged region is logically one (shared label) but visually still
+// shows per-fragment outlines, because gutter pixels (label 0) between
+// fragments form a boundary on every fragment edge.
 function mergeSideColumns(regions, gridW, gridH, sideFrac) {
   if (sideFrac <= 0 || regions.length < 2) return regions;
 
@@ -456,7 +464,23 @@ function mergeSideColumns(regions, gridW, gridH, sideFrac) {
       for (let p = 0; p < N; p++) if (src[p]) mask[p] = 1;
     }
     const info = bboxFromMask(mask, gridW, gridH);
-    return [{ mask, bbox: info.bbox, area: info.area }];
+    // Vertical-gap fill within the bbox.
+    const x0 = info.bbox.x, x1 = info.bbox.x + info.bbox.w;
+    const y0 = info.bbox.y, y1 = info.bbox.y + info.bbox.h;
+    for (let x = x0; x < x1; x++) {
+      let topY = -1, bottomY = -1;
+      for (let y = y0; y < y1; y++) {
+        if (mask[y * gridW + x]) {
+          if (topY < 0) topY = y;
+          bottomY = y;
+        }
+      }
+      if (topY >= 0) {
+        for (let y = topY; y <= bottomY; y++) mask[y * gridW + x] = 1;
+      }
+    }
+    const filled = bboxFromMask(mask, gridW, gridH);
+    return [{ mask, bbox: filled.bbox, area: filled.area }];
   };
 
   return [
@@ -584,8 +608,9 @@ function detectHybrid() {
   }
 
   // Post-process: collapse fragmented side-column pieces into one region
-  // per side. `sideFrac` is the centroid threshold (slider; 0 disables).
-  const sideFrac = regionOpts.sideFrac ?? 0.15;
+  // per side. Gated by the `merge sides` checkbox; `sideFrac` is the
+  // centroid threshold (slider).
+  const sideFrac = hybrid.sideMerge ? (regionOpts.sideFrac ?? 0.15) : 0;
   const merged = mergeSideColumns(withBbox, gridW, gridH, sideFrac);
 
   // Assign sequential ids; build the unified labels grid and attach
@@ -667,8 +692,9 @@ function createRegionDebugPanel() {
   // Method selection: which detectors to apply and in what order.
   const methodRow = document.createElement('div');
   methodRow.style.cssText = 'display:flex;gap:10px;align-items:center;margin:2px 0 6px;';
-  methodRow.appendChild(makeToggle('pixel', hybrid.pixel, v => { hybrid.pixel = v; persistHybrid(); applyHybrid(); }));
-  methodRow.appendChild(makeToggle('text',  hybrid.text,  v => { hybrid.text  = v; persistHybrid(); applyHybrid(); }));
+  methodRow.appendChild(makeToggle('pixel',      hybrid.pixel,     v => { hybrid.pixel     = v; persistHybrid(); applyHybrid(); }));
+  methodRow.appendChild(makeToggle('text',       hybrid.text,      v => { hybrid.text      = v; persistHybrid(); applyHybrid(); }));
+  methodRow.appendChild(makeToggle('merge sides', hybrid.sideMerge, v => { hybrid.sideMerge = v; persistHybrid(); applyHybrid(); }));
   const orderSel = document.createElement('select');
   orderSel.style.cssText = 'margin-left:auto;background:rgba(40,30,20,0.9);color:inherit;border:1px solid rgba(255,230,170,0.3);border-radius:3px;padding:1px 4px;font:inherit;';
   for (const [val, lbl] of [['pixel,text', 'pixel → text'], ['text,pixel', 'text → pixel']]) {

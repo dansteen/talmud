@@ -624,6 +624,7 @@ function autoTuneAndApply(baseOpts) {
 const PANEL_CONTROLS = [
   { key: 'minShort',      label: 'minShort (px)',  min: 0,    max: 50,   step: 1, def: 9 },
   { key: 'minLong',       label: 'minLong (px)',   min: 0,    max: 1000, step: 1, def: 50 },
+  { key: 'inkBudget',     label: 'inkBudget (px)', min: 0,    max: 200,  step: 1, def: 0 },
   { key: 'darkThreshold', label: 'darkThreshold',  min: 0,    max: 255,  step: 1, def: 150 },
 ];
 
@@ -863,9 +864,10 @@ function drawRegionOverlay() {
   const { grid, gridW, gridH } = buildGridFromImageData(pixelImageData, darkThreshold);
   currentGrid = { gridW, gridH };
 
-  const minShort = regionOpts.minShort ?? 9;
-  const minLong  = regionOpts.minLong  ?? 50;
-  const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong });
+  const minShort  = regionOpts.minShort  ?? 9;
+  const minLong   = regionOpts.minLong   ?? 50;
+  const inkBudget = regionOpts.inkBudget ?? 0;
+  const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong, inkBudget });
 
   const N = gridW * gridH;
   const overlayStyle =

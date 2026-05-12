@@ -48,43 +48,61 @@ export function buildGridFromImageData(imageData, darkThreshold = 130) {
 //
 // Both X and Y are at pixel resolution, so all run lengths are direct
 // pixel counts.
+//
+// `inkBudget` lets a run tolerate up to that many dark pixels without
+// breaking — bridges small obstructions like the catchword (the first
+// word of the next page that's dropped into the bottom margin). A
+// catchword is ~20–60 px wide; a real column is 200+ px, so a budget
+// well below column width skips catchwords without fusing columns.
 export function detectGutters(grid, gridW, gridH, opts = {}) {
-  const minShort = Math.max(1, opts.minShort ?? 1);
-  const minLong  = Math.max(1, opts.minLong  ?? 50);
+  const minShort  = Math.max(1, opts.minShort  ?? 1);
+  const minLong   = Math.max(1, opts.minLong   ?? 50);
+  const inkBudget = Math.max(0, opts.inkBudget ?? 0);
 
-  // Step 1a: hMark[i] = 1 iff cell i is empty AND lies inside a horizontal
-  // empty run of ≥ minLong pixels.
+  // Step 1a: hMark[i] = 1 iff cell i is inside a "mostly empty" horizontal
+  // run whose span (first-empty..last-empty) is ≥ minLong px and which
+  // contains ≤ inkBudget dark pixels. Tolerated dark pixels inside the
+  // span are marked too (so the gutter visually flows through them).
   const hMark = new Uint8Array(gridW * gridH);
   for (let y = 0; y < gridH; y++) {
     const base = y * gridW;
-    let runStart = -1;
+    let runStart = -1, lastEmpty = -1, darkInRun = 0;
     for (let x = 0; x <= gridW; x++) {
-      const isEmpty = x < gridW && grid[base + x] === 0;
+      const inBounds = x < gridW;
+      const isEmpty = inBounds && grid[base + x] === 0;
       if (isEmpty) {
-        if (runStart < 0) runStart = x;
+        if (runStart < 0) { runStart = x; darkInRun = 0; }
+        lastEmpty = x;
       } else if (runStart >= 0) {
-        if (x - runStart >= minLong) {
-          for (let xx = runStart; xx < x; xx++) hMark[base + xx] = 1;
+        if (inBounds) darkInRun++;
+        if (!inBounds || darkInRun > inkBudget) {
+          if (lastEmpty - runStart + 1 >= minLong) {
+            for (let xx = runStart; xx <= lastEmpty; xx++) hMark[base + xx] = 1;
+          }
+          runStart = -1;
         }
-        runStart = -1;
       }
     }
   }
 
-  // Step 1b: vMark[i] = 1 iff cell i is empty AND lies inside a vertical
-  // empty run of ≥ minLong pixels.
+  // Step 1b: same for vertical runs.
   const vMark = new Uint8Array(gridW * gridH);
   for (let x = 0; x < gridW; x++) {
-    let runStart = -1;
+    let runStart = -1, lastEmpty = -1, darkInRun = 0;
     for (let y = 0; y <= gridH; y++) {
-      const isEmpty = y < gridH && grid[y * gridW + x] === 0;
+      const inBounds = y < gridH;
+      const isEmpty = inBounds && grid[y * gridW + x] === 0;
       if (isEmpty) {
-        if (runStart < 0) runStart = y;
+        if (runStart < 0) { runStart = y; darkInRun = 0; }
+        lastEmpty = y;
       } else if (runStart >= 0) {
-        if (y - runStart >= minLong) {
-          for (let yy = runStart; yy < y; yy++) vMark[yy * gridW + x] = 1;
+        if (inBounds) darkInRun++;
+        if (!inBounds || darkInRun > inkBudget) {
+          if (lastEmpty - runStart + 1 >= minLong) {
+            for (let yy = runStart; yy <= lastEmpty; yy++) vMark[yy * gridW + x] = 1;
+          }
+          runStart = -1;
         }
-        runStart = -1;
       }
     }
   }

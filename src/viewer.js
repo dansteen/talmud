@@ -428,6 +428,44 @@ function bboxFromMask(mask, gridW, gridH) {
   };
 }
 
+// Merge regions whose centroid falls in the leftmost or rightmost
+// `sideFrac` strip of the page. Talmud pages have side meforshim
+// (Tosafot, Mesores HaShas) that wrap vertically into multiple
+// fragments; this collapses them back into a single column per side.
+// Middle-of-page regions are left alone.
+function mergeSideColumns(regions, gridW, gridH, sideFrac) {
+  if (sideFrac <= 0 || regions.length < 2) return regions;
+
+  const leftThresh  = sideFrac * gridW;
+  const rightThresh = (1 - sideFrac) * gridW;
+  const leftIdx = [], rightIdx = [], otherIdx = [];
+  regions.forEach((r, idx) => {
+    const cx = r.bbox.x + r.bbox.w / 2;
+    if (cx < leftThresh)       leftIdx.push(idx);
+    else if (cx > rightThresh) rightIdx.push(idx);
+    else                       otherIdx.push(idx);
+  });
+
+  const N = gridW * gridH;
+  const mergeGroup = (indices) => {
+    if (indices.length === 0) return [];
+    if (indices.length === 1) return [regions[indices[0]]];
+    const mask = new Uint8Array(N);
+    for (const i of indices) {
+      const src = regions[i].mask;
+      for (let p = 0; p < N; p++) if (src[p]) mask[p] = 1;
+    }
+    const info = bboxFromMask(mask, gridW, gridH);
+    return [{ mask, bbox: info.bbox, area: info.area }];
+  };
+
+  return [
+    ...mergeGroup(rightIdx),                  // rightmost (highest x) first
+    ...otherIdx.map(i => regions[i]),         // middle regions, original order
+    ...mergeGroup(leftIdx),                   // leftmost last
+  ];
+}
+
 function medianFontSizeInside(mask, gridW, gridH, items) {
   const sizes = [];
   for (const it of items) {
@@ -537,23 +575,33 @@ function detectHybrid() {
     firstPass = false;
   }
 
-  // Assign sequential ids; build a unified labels grid and per-region meta.
-  const labels = new Int32Array(N);
-  const finalRegions = [];
-  for (let i = 0; i < regionList.length; i++) {
-    const id = finalRegions.length + 1;
-    const mask = regionList[i].mask;
-    const info = bboxFromMask(mask, gridW, gridH);
-    if (!info) continue;
-    for (let p = 0; p < N; p++) if (mask[p]) labels[p] = id;
-    finalRegions.push({
-      id,
-      mask,
-      bbox: info.bbox,
-      area: info.area,
-      fontSize: medianFontSizeInside(mask, gridW, gridH, textItems),
-    });
+  // Compute bbox/area for each region so the side-column merge can use
+  // centroid positions.
+  const withBbox = [];
+  for (const r of regionList) {
+    const info = bboxFromMask(r.mask, gridW, gridH);
+    if (info) withBbox.push({ mask: r.mask, bbox: info.bbox, area: info.area });
   }
+
+  // Post-process: collapse fragmented side-column pieces into one region
+  // per side. `sideFrac` is the centroid threshold (slider; 0 disables).
+  const sideFrac = regionOpts.sideFrac ?? 0.15;
+  const merged = mergeSideColumns(withBbox, gridW, gridH, sideFrac);
+
+  // Assign sequential ids; build the unified labels grid and attach
+  // fontSize from the text items inside each region.
+  const labels = new Int32Array(N);
+  const finalRegions = merged.map((r, i) => {
+    const id = i + 1;
+    for (let p = 0; p < N; p++) if (r.mask[p]) labels[p] = id;
+    return {
+      id,
+      mask: r.mask,
+      bbox: r.bbox,
+      area: r.area,
+      fontSize: medianFontSizeInside(r.mask, gridW, gridH, textItems),
+    };
+  });
 
   return { regions: finalRegions, labels, gridW, gridH, cellSize: 1, grid, gutterMask };
 }
@@ -583,6 +631,8 @@ const PANEL_CONTROLS = [
   { key: 'closeRadiusX',     label: 'closeRadiusX',    min: 0,    max: 20,   step: 1,    def: 0 },
   { key: 'closeRadiusY',     label: 'closeRadiusY',    min: 0,    max: 20,   step: 1,    def: 0 },
   { key: 'closeRadiusYSide', label: 'closeRadiusYSide',min: 0,    max: 20,   step: 1,    def: 5 },
+  // Side-column merge
+  { key: 'sideFrac',         label: 'sideFrac',        min: 0,    max: 0.5,  step: 0.01, def: 0.15 },
 ];
 
 let panelStatusEl = null;

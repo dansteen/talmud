@@ -453,37 +453,40 @@ function mergeSideColumns(regions, gridW, gridH, sideFrac) {
     return regions;
   }
 
-  // Thresholds are relative to the actual extent of detected regions,
-  // not the raw page width. Many PDFs have large empty page margins
-  // that would push the right threshold way past the rightmost content,
-  // so a centroid-based check against gridW alone misses the side
-  // columns even when they're clearly at the edge of the text area.
-  let xMin = Infinity, xMax = -Infinity;
+  // Anchor the side columns to the extreme detected content edges, not
+  // the raw page width. Then classify each region by whether its LEFT
+  // edge is anchored (left column) or RIGHT edge is anchored (right
+  // column). This catches wraparounds where a side column spreads
+  // inward — e.g. the leftmost column extending under the main column
+  // at the bottom has bbox.x == leftAnchorX but extends well past the
+  // narrow side band, so a centroid check would miss it. A region whose
+  // bbox spans the full content width (anchored on both sides) is left
+  // alone.
+  let leftAnchorX = Infinity, rightAnchorX = -Infinity;
   for (const r of regions) {
-    if (r.bbox.x < xMin) xMin = r.bbox.x;
-    if (r.bbox.x + r.bbox.w > xMax) xMax = r.bbox.x + r.bbox.w;
+    if (r.bbox.x < leftAnchorX) leftAnchorX = r.bbox.x;
+    if (r.bbox.x + r.bbox.w > rightAnchorX) rightAnchorX = r.bbox.x + r.bbox.w;
   }
-  const activeW = xMax - xMin;
-  const leftThresh  = xMin + sideFrac * activeW;
-  const rightThresh = xMax - sideFrac * activeW;
+  const activeW = rightAnchorX - leftAnchorX;
+  const tol = sideFrac * activeW;
   const leftIdx = [], rightIdx = [], otherIdx = [];
   regions.forEach((r, idx) => {
-    const cx = r.bbox.x + r.bbox.w / 2;
-    if (cx < leftThresh)       leftIdx.push(idx);
-    else if (cx > rightThresh) rightIdx.push(idx);
-    else                       otherIdx.push(idx);
+    const startsAtLeft = r.bbox.x                   <= leftAnchorX  + tol;
+    const endsAtRight  = (r.bbox.x + r.bbox.w)      >= rightAnchorX - tol;
+    if (startsAtLeft && !endsAtRight)      leftIdx.push(idx);
+    else if (endsAtRight && !startsAtLeft) rightIdx.push(idx);
+    else                                   otherIdx.push(idx);
   });
 
   if (DEBUG_REGIONS) {
     // eslint-disable-next-line no-console
     console.log('[merge]', {
-      gridW,
+      leftAnchorX,
+      rightAnchorX,
       sideFrac,
-      leftThresh,
-      rightThresh,
+      tol,
       regions: regions.map((r, i) => ({
         idx: i,
-        cx: r.bbox.x + r.bbox.w / 2,
         bbox: r.bbox,
         bucket: leftIdx.includes(i) ? 'left' : rightIdx.includes(i) ? 'right' : 'middle',
       })),
@@ -649,7 +652,7 @@ function detectHybrid() {
   // per side. Gated by the `merge sides` checkbox; `sideFrac` is the
   // centroid threshold (slider).
   lastMergeStats = null;
-  const sideFrac = hybrid.sideMerge ? (regionOpts.sideFrac ?? 0.15) : 0;
+  const sideFrac = hybrid.sideMerge ? (regionOpts.sideFrac ?? 0.05) : 0;
   const merged = mergeSideColumns(withBbox, gridW, gridH, sideFrac);
 
   // Assign sequential ids; build the unified labels grid and attach
@@ -696,7 +699,7 @@ const PANEL_CONTROLS = [
   { key: 'closeRadiusY',     label: 'closeRadiusY',    min: 0,    max: 20,   step: 1,    def: 0 },
   { key: 'closeRadiusYSide', label: 'closeRadiusYSide',min: 0,    max: 20,   step: 1,    def: 5 },
   // Side-column merge
-  { key: 'sideFrac',         label: 'sideFrac',        min: 0,    max: 0.5,  step: 0.01, def: 0.15 },
+  { key: 'sideFrac',         label: 'sideFrac',        min: 0,    max: 0.3,  step: 0.01, def: 0.05 },
 ];
 
 let panelStatusEl = null;

@@ -39,6 +39,9 @@ const SWIPE_DISTANCE_PX = 60;
 // 2-finger pinch state
 let prevMidX = 0, prevMidY = 0, prevDist = 0;
 let didPinch = false;
+// Single-finger drag state — previous position used for incremental pan
+// while zoomed.
+let prevSingleX = 0, prevSingleY = 0;
 
 // The current "active" fontSize — set on a zoom-in double-tap, cleared
 // on a zoom-out double-tap (same fontSize tapped again). null = home /
@@ -71,6 +74,11 @@ function onTouchStart(e) {
   }
   hasMoved = false;
   if (touches.size >= 1 && gestureStartTime === 0) gestureStartTime = Date.now();
+  if (touches.size === 1) {
+    const t = touches.values().next().value;
+    prevSingleX = t.x;
+    prevSingleY = t.y;
+  }
   if (touches.size === 2) {
     const s = twoTouchState();
     prevDist = s.dist;
@@ -93,8 +101,18 @@ function onTouchMove(e) {
 
   const count = touches.size;
 
-  // Single finger never pans or zooms — reading mode.
-  if (count === 1) return;
+  // Single finger: pan when zoomed in; reading-mode no-op at home.
+  if (count === 1) {
+    if (currentFontSize !== null) {
+      const t = touches.values().next().value;
+      const dx = t.x - prevSingleX;
+      const dy = t.y - prevSingleY;
+      if (dx !== 0 || dy !== 0) applyDelta(dx, dy, 1, 0, 0);
+      prevSingleX = t.x;
+      prevSingleY = t.y;
+    }
+    return;
+  }
 
   // Pinch only works when zoomed into an area. Zoomed-out: no effect.
   if (count === 2 && currentFontSize !== null) {
@@ -153,6 +171,11 @@ function onTouchEnd(e) {
     gestureStartTime = 0;
   } else if (touches.size === 1) {
     prevDist = 0;
+    // Anchor incremental pan on the remaining finger so the next
+    // touchmove doesn't compute a delta from a stale position.
+    const t = touches.values().next().value;
+    prevSingleX = t.x;
+    prevSingleY = t.y;
   }
 }
 

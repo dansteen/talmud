@@ -72,6 +72,8 @@ let pixelImageData = null;
 // method either runs on the full page (first pass) or refines the regions
 // produced by the previous pass (second pass).
 const HYBRID_KEY = 'regionHybridConfig';
+const HYBRID_DEFAULTS  = { pixel: true, text: false, order: 'pixel,text', sideMerge: true };
+const OVERLAY_DEFAULTS = { mask: false, boxes: true, colors: true, ids: true };
 const hybrid = (() => {
   try {
     const saved = JSON.parse(localStorage.getItem(HYBRID_KEY) || 'null');
@@ -84,7 +86,7 @@ const hybrid = (() => {
       };
     }
   } catch {}
-  return { pixel: true, text: false, order: 'pixel,text', sideMerge: true };
+  return { ...HYBRID_DEFAULTS };
 })();
 function persistHybrid() {
   try { localStorage.setItem(HYBRID_KEY, JSON.stringify(hybrid)); } catch {}
@@ -758,7 +760,9 @@ let mouseCoordEl = null;
 // position can be reported in pixel coordinates.
 let currentGrid = { gridW: 1, gridH: 1 };
 const sliderRefs = new Map(); // key → { input, val, step }
-const overlayDisplay = { mask: false, boxes: true, colors: true, ids: true };
+const toggleRefs = new Map(); // key → checkbox input element
+let orderSelRef = null;       // the order <select> element
+const overlayDisplay = { ...OVERLAY_DEFAULTS };
 const PANEL_POS_KEY = 'regionDebugPanelPos';
 
 function createRegionDebugPanel() {
@@ -775,18 +779,31 @@ function createRegionDebugPanel() {
     min-width: 220px;
   `;
 
+  const titleRow = document.createElement('div');
+  titleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;';
   const title = document.createElement('div');
   title.textContent = '⠿ region tuning';
-  title.style.cssText = 'font-weight:600;margin-bottom:6px;opacity:0.7;cursor:move;';
-  panel.appendChild(title);
+  title.style.cssText = 'font-weight:600;opacity:0.7;cursor:move;flex:1;';
+  titleRow.appendChild(title);
+
+  const resetBtn = document.createElement('button');
+  resetBtn.textContent = 'reset';
+  resetBtn.style.cssText =
+    'background:rgba(40,30,20,0.9);color:inherit;' +
+    'border:1px solid rgba(255,230,170,0.3);border-radius:3px;' +
+    'padding:1px 6px;font:inherit;cursor:pointer;';
+  resetBtn.addEventListener('click', resetPanelToDefaults);
+  titleRow.appendChild(resetBtn);
+
+  panel.appendChild(titleRow);
   enablePanelDrag(panel, title);
 
   // Method selection: which detectors to apply and in what order.
   const methodRow = document.createElement('div');
   methodRow.style.cssText = 'display:flex;gap:10px;align-items:center;margin:2px 0 6px;';
-  methodRow.appendChild(makeToggle('pixel',      hybrid.pixel,     v => { hybrid.pixel     = v; persistHybrid(); applyHybrid(); }));
-  methodRow.appendChild(makeToggle('text',       hybrid.text,      v => { hybrid.text      = v; persistHybrid(); applyHybrid(); }));
-  methodRow.appendChild(makeToggle('merge sides', hybrid.sideMerge, v => { hybrid.sideMerge = v; persistHybrid(); applyHybrid(); }));
+  methodRow.appendChild(makeToggle('pixel',       hybrid.pixel,     v => { hybrid.pixel     = v; persistHybrid(); applyHybrid(); }, 'pixel'));
+  methodRow.appendChild(makeToggle('text',        hybrid.text,      v => { hybrid.text      = v; persistHybrid(); applyHybrid(); }, 'text'));
+  methodRow.appendChild(makeToggle('merge sides', hybrid.sideMerge, v => { hybrid.sideMerge = v; persistHybrid(); applyHybrid(); }, 'sideMerge'));
   const orderSel = document.createElement('select');
   orderSel.style.cssText = 'margin-left:auto;background:rgba(40,30,20,0.9);color:inherit;border:1px solid rgba(255,230,170,0.3);border-radius:3px;padding:1px 4px;font:inherit;';
   for (const [val, lbl] of [['pixel,text', 'pixel → text'], ['text,pixel', 'text → pixel']]) {
@@ -801,15 +818,16 @@ function createRegionDebugPanel() {
     applyHybrid();
   });
   methodRow.appendChild(orderSel);
+  orderSelRef = orderSel;
   panel.appendChild(methodRow);
 
   // Overlay visibility toggles. Grouped on one row to keep the panel compact.
   const toggleRow = document.createElement('div');
   toggleRow.style.cssText = 'display:flex;gap:12px;margin:2px 0 8px;';
-  toggleRow.appendChild(makeToggle('mask',   overlayDisplay.mask,   v => { overlayDisplay.mask   = v; drawRegionOverlay(); }));
-  toggleRow.appendChild(makeToggle('boxes',  overlayDisplay.boxes,  v => { overlayDisplay.boxes  = v; drawRegionOverlay(); }));
-  toggleRow.appendChild(makeToggle('colors', overlayDisplay.colors, v => { overlayDisplay.colors = v; drawRegionOverlay(); }));
-  toggleRow.appendChild(makeToggle('ids',    overlayDisplay.ids,    v => { overlayDisplay.ids    = v; drawRegionOverlay(); }));
+  toggleRow.appendChild(makeToggle('mask',   overlayDisplay.mask,   v => { overlayDisplay.mask   = v; drawRegionOverlay(); }, 'mask'));
+  toggleRow.appendChild(makeToggle('boxes',  overlayDisplay.boxes,  v => { overlayDisplay.boxes  = v; drawRegionOverlay(); }, 'boxes'));
+  toggleRow.appendChild(makeToggle('colors', overlayDisplay.colors, v => { overlayDisplay.colors = v; drawRegionOverlay(); }, 'colors'));
+  toggleRow.appendChild(makeToggle('ids',    overlayDisplay.ids,    v => { overlayDisplay.ids    = v; drawRegionOverlay(); }, 'ids'));
   panel.appendChild(toggleRow);
 
   for (const c of PANEL_CONTROLS) {
@@ -877,7 +895,7 @@ function createRegionDebugPanel() {
   });
 }
 
-function makeToggle(label, initial, onChange) {
+function makeToggle(label, initial, onChange, refKey) {
   const wrap = document.createElement('label');
   wrap.style.cssText = 'display:flex;align-items:center;gap:4px;cursor:pointer;';
   const cb = document.createElement('input');
@@ -889,6 +907,7 @@ function makeToggle(label, initial, onChange) {
   const text = document.createElement('span');
   text.textContent = label;
   wrap.appendChild(text);
+  if (refKey) toggleRefs.set(refKey, cb);
   return wrap;
 }
 
@@ -945,6 +964,27 @@ function enablePanelDrag(panel, handle) {
   handle.addEventListener('touchstart', onDown, { passive: false });
   window.addEventListener('touchmove',  onMove, { passive: false });
   window.addEventListener('touchend',   onUp);
+}
+
+// Reset the entire debug panel to the defaults declared at the top of
+// the module: hybrid config (pixel/text/order/sideMerge), overlay
+// display toggles (mask/boxes/colors/ids), and every numeric slider.
+// Updates both the in-memory state objects and the corresponding DOM
+// controls, persists the hybrid config, then re-runs the pipeline.
+function resetPanelToDefaults() {
+  Object.assign(hybrid, HYBRID_DEFAULTS);
+  persistHybrid();
+  Object.assign(overlayDisplay, OVERLAY_DEFAULTS);
+  for (const c of PANEL_CONTROLS) regionOpts[c.key] = c.def;
+
+  for (const [key, cb] of toggleRefs) {
+    if (key in hybrid)              cb.checked = hybrid[key];
+    else if (key in overlayDisplay) cb.checked = overlayDisplay[key];
+  }
+  if (orderSelRef) orderSelRef.value = hybrid.order;
+  syncDebugPanelSliders();
+
+  applyHybrid();
 }
 
 function formatVal(v, step) {

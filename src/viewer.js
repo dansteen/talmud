@@ -708,7 +708,7 @@ let mouseCoordEl = null;
 // position can be reported in pixel coordinates.
 let currentGrid = { gridW: 1, gridH: 1 };
 const sliderRefs = new Map(); // key → { input, val, step }
-const overlayDisplay = { mask: false, boxes: true, colors: true };
+const overlayDisplay = { mask: false, boxes: true, colors: true, ids: true };
 const PANEL_POS_KEY = 'regionDebugPanelPos';
 
 function createRegionDebugPanel() {
@@ -759,6 +759,7 @@ function createRegionDebugPanel() {
   toggleRow.appendChild(makeToggle('mask',   overlayDisplay.mask,   v => { overlayDisplay.mask   = v; drawRegionOverlay(); }));
   toggleRow.appendChild(makeToggle('boxes',  overlayDisplay.boxes,  v => { overlayDisplay.boxes  = v; drawRegionOverlay(); }));
   toggleRow.appendChild(makeToggle('colors', overlayDisplay.colors, v => { overlayDisplay.colors = v; drawRegionOverlay(); }));
+  toggleRow.appendChild(makeToggle('ids',    overlayDisplay.ids,    v => { overlayDisplay.ids    = v; drawRegionOverlay(); }));
   panel.appendChild(toggleRow);
 
   for (const c of PANEL_CONTROLS) {
@@ -1024,6 +1025,26 @@ function drawRegionOverlay() {
 
     cctx.putImageData(img, 0, 0);
     overlay.appendChild(cvs);
+  }
+
+  // Region ID labels — small colored badges centered on each region's
+  // bbox. Lets us refer to regions by number when discussing detection.
+  if (overlayDisplay.ids && regionsData.regions?.length) {
+    for (const r of regionsData.regions) {
+      const cx = (r.bbox.x + r.bbox.w / 2) / gridW * 100;
+      const cy = (r.bbox.y + r.bbox.h / 2) / gridH * 100;
+      const color = REGION_COLORS[(r.id - 1) % REGION_COLORS.length];
+      const tag = document.createElement('div');
+      tag.textContent = String(r.id);
+      tag.style.cssText =
+        'position:absolute;transform:translate(-50%,-50%);pointer-events:none;' +
+        `left:${cx}%;top:${cy}%;` +
+        'font:bold 11px ui-monospace,monospace;color:#000;' +
+        'padding:1px 5px;border-radius:8px;' +
+        `background:rgba(${color[0]},${color[1]},${color[2]},0.95);` +
+        'box-shadow:0 0 3px rgba(0,0,0,0.7);';
+      overlay.appendChild(tag);
+    }
   }
 }
 

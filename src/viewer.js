@@ -583,6 +583,25 @@ function mergeSideColumns(regions, gridW, gridH, sideFrac) {
   ];
 }
 
+// Drop regions that look like the masechta-title text at the top of
+// the page. A title region is at the very top AND has a fontSize
+// notably larger than the median — both signals together are reliable
+// (position alone catches the first line of any region; large font
+// alone catches headers that aren't at the top). If the title is
+// already filtered out by minArea (its per-word fragments are usually
+// too small to survive), this is a no-op.
+function filterTitleRegions(regions, gridH) {
+  if (regions.length < 2) return regions;
+  const sizes = regions.map(r => r.fontSize).filter(s => s > 0).sort((a, b) => a - b);
+  if (sizes.length < 2) return regions;
+  const medianFs = sizes[sizes.length >> 1];
+  return regions.filter(r => {
+    const atTop   = r.bbox.y     < 0.05 * gridH;
+    const bigFont = r.fontSize   > 1.5  * medianFs;
+    return !(atTop && bigFont);
+  });
+}
+
 function medianFontSizeInside(mask, gridW, gridH, items) {
   const sizes = [];
   for (const it of items) {
@@ -707,10 +726,16 @@ function detectHybrid() {
   const sideFrac = hybrid.sideMerge ? (regionOpts.sideFrac ?? 0.05) : 0;
   const merged = mergeSideColumns(withBbox, gridW, gridH, sideFrac);
 
-  // Assign sequential ids; build the unified labels grid and attach
-  // fontSize from the text items inside each region.
+  // Attach fontSize to each merged region — needed for the title filter
+  // (which compares each region's fontSize to the page median).
+  for (const r of merged) {
+    r.fontSize = medianFontSizeInside(r.mask, gridW, gridH, textItems);
+  }
+  const filtered = filterTitleRegions(merged, gridH);
+
+  // Assign sequential ids; build the unified labels grid.
   const labels = new Int32Array(N);
-  const finalRegions = merged.map((r, i) => {
+  const finalRegions = filtered.map((r, i) => {
     const id = i + 1;
     for (let p = 0; p < N; p++) if (r.mask[p]) labels[p] = id;
     return {
@@ -718,7 +743,7 @@ function detectHybrid() {
       mask: r.mask,
       bbox: r.bbox,
       area: r.area,
-      fontSize: medianFontSizeInside(r.mask, gridW, gridH, textItems),
+      fontSize: r.fontSize,
     };
   });
 

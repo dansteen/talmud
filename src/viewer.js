@@ -478,6 +478,54 @@ function mergeSideColumns(regions, gridW, gridH, sideFrac) {
     else                                   otherIdx.push(idx);
   });
 
+  // Second pass: for each region that landed in `otherIdx` (anchors to
+  // both edges, or to neither), do a top-scan reclassification. Look at
+  // the region's topmost row of ink; if any of that row's ink overlaps
+  // a side strip (taken from the narrowest already-anchored fragment),
+  // move the region to that side bucket. Left first when the topmost
+  // row touches both strips. This catches L-shaped regions that start
+  // narrow inside a side strip and then widen out lower on the page —
+  // e.g. on megillah 18b, region #5 starts as a thin strip on the
+  // right edge at y=427 and only broadens to full width below y=691.
+  // Safe because Talmud pages don't extend the gemara into the side
+  // strips, so only genuinely side-column-derived regions overlap a
+  // side strip at their top.
+  const narrowRange = (indices) => {
+    if (indices.length === 0) return null;
+    let narrowest = regions[indices[0]];
+    for (const i of indices) {
+      if (regions[i].bbox.w < narrowest.bbox.w) narrowest = regions[i];
+    }
+    return { x0: narrowest.bbox.x, x1: narrowest.bbox.x + narrowest.bbox.w };
+  };
+  const leftStrip  = narrowRange(leftIdx);
+  const rightStrip = narrowRange(rightIdx);
+
+  const trueMiddle = [];
+  for (const idx of otherIdx) {
+    const r = regions[idx];
+    // Topmost ink row in the region's mask.
+    let yTop = -1;
+    for (let y = r.bbox.y; y < r.bbox.y + r.bbox.h; y++) {
+      for (let x = r.bbox.x; x < r.bbox.x + r.bbox.w; x++) {
+        if (r.mask[y * gridW + x]) { yTop = y; break; }
+      }
+      if (yTop >= 0) break;
+    }
+    if (yTop < 0) { trueMiddle.push(idx); continue; }
+    // Does any ink at yTop fall inside a side strip?
+    let overlapsLeft = false, overlapsRight = false;
+    for (let x = r.bbox.x; x < r.bbox.x + r.bbox.w; x++) {
+      if (!r.mask[yTop * gridW + x]) continue;
+      if (leftStrip  && x >= leftStrip.x0  && x < leftStrip.x1)  overlapsLeft  = true;
+      if (rightStrip && x >= rightStrip.x0 && x < rightStrip.x1) overlapsRight = true;
+      if (overlapsLeft && overlapsRight) break;
+    }
+    if (overlapsLeft)       leftIdx.push(idx);
+    else if (overlapsRight) rightIdx.push(idx);
+    else                    trueMiddle.push(idx);
+  }
+
   if (DEBUG_REGIONS) {
     // eslint-disable-next-line no-console
     console.log('[merge]', {
@@ -485,15 +533,17 @@ function mergeSideColumns(regions, gridW, gridH, sideFrac) {
       rightAnchorX,
       sideFrac,
       tol,
+      leftStrip,
+      rightStrip,
       regions: regions.map((r, i) => ({
         idx: i,
         bbox: r.bbox,
         bucket: leftIdx.includes(i) ? 'left' : rightIdx.includes(i) ? 'right' : 'middle',
       })),
-      groups: { left: leftIdx.length, right: rightIdx.length, middle: otherIdx.length },
+      groups: { left: leftIdx.length, right: rightIdx.length, middle: trueMiddle.length },
     });
   }
-  lastMergeStats = { pre: regions.length, left: leftIdx.length, right: rightIdx.length, middle: otherIdx.length };
+  lastMergeStats = { pre: regions.length, left: leftIdx.length, right: rightIdx.length, middle: trueMiddle.length };
 
   const N = gridW * gridH;
   const mergeGroup = (indices) => {
@@ -526,7 +576,7 @@ function mergeSideColumns(regions, gridW, gridH, sideFrac) {
 
   return [
     ...mergeGroup(rightIdx),                  // rightmost (highest x) first
-    ...otherIdx.map(i => regions[i]),         // middle regions, original order
+    ...trueMiddle.map(i => regions[i]),       // middle regions, original order
     ...mergeGroup(leftIdx),                   // leftmost last
   ];
 }

@@ -72,7 +72,7 @@ let pixelImageData = null;
 // method either runs on the full page (first pass) or refines the regions
 // produced by the previous pass (second pass).
 const HYBRID_KEY = 'regionHybridConfig';
-const HYBRID_DEFAULTS  = { pixel: true, text: false, order: 'pixel,text', sideMerge: true };
+const HYBRID_DEFAULTS  = { pixel: true, text: true, order: 'text,pixel', sideMerge: true };
 const OVERLAY_DEFAULTS = { mask: false, boxes: true, colors: true, ids: true };
 const hybrid = (() => {
   try {

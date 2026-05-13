@@ -274,10 +274,11 @@ const PANEL_CONTROLS = [
 ];
 const regionOpts = Object.fromEntries(PANEL_CONTROLS.map(c => [c.key, c.def]));
 
-// Pick the most common (mode) font size of text items inside an area's
-// pixel mask, rounded to 1pt buckets. Returns 0 if no text items land
-// inside the area.
-function dominantFontSize(mask, gridW, gridH, items) {
+// Mode of text-item heights within a region's mask, bucketed to 1pt.
+// Used only for the debug overlay's per-area label; tap-driven zoom
+// uses localFontSize instead (computed at the tap point so it reflects
+// the text actually under the user's finger).
+function wholeAreaFontSize(mask, gridW, gridH, items) {
   const buckets = new Map();
   for (const it of items) {
     if (!(it.fontSize > 0)) continue;
@@ -297,8 +298,8 @@ function dominantFontSize(mask, gridW, gridH, items) {
 
 // Compute the page's "areas" from the cached page render. Areas are
 // 4-connected components of pixels NOT in the gutter mask. Each area
-// carries a pixel mask, bbox, and the dominant font size of the text
-// items that fall inside it.
+// carries a pixel mask + bbox; fontSize is a coarse whole-area mode
+// kept only for the debug overlay.
 function recomputeAreas() {
   if (!pixelImageData) { areasData = null; return; }
 
@@ -319,7 +320,7 @@ function recomputeAreas() {
       mask,
       bbox: { x: r.x, y: r.y, w: r.w, h: r.h },
       area: r.area,
-      fontSize: dominantFontSize(mask, gridW, gridH, textItems),
+      fontSize: wholeAreaFontSize(mask, gridW, gridH, textItems),
     };
   });
 
@@ -370,57 +371,107 @@ function screenToPdf(clientX, clientY) {
   };
 }
 
-// Find the area under a screen point. Tap on a gutter pixel returns
-// null. To make the interaction forgiving for taps that just barely
-// miss text, we expand outward to find the nearest labeled pixel
-// within HIT_LEEWAY_PX pixels.
-const HIT_LEEWAY_PX = 8;
-export function findAreaAtPoint(clientX, clientY) {
+// Mode of text-item heights in `area` within `radius` PDF px of
+// (pdfX, pdfY). Items are only counted if their centroid lies inside
+// the area's pixel mask (so we never cross a gutter). Bucketed to 1pt.
+// Returns 0 if no items qualify at this radius.
+function localFontSize(area, pdfX, pdfY, radius) {
+  if (!areasData) return 0;
+  const { gridW, gridH } = areasData;
+  const r2 = radius * radius;
+  const buckets = new Map();
+  for (const it of textItems) {
+    if (!(it.fontSize > 0)) continue;
+    const cx = it.x + it.w / 2;
+    const cy = it.y + it.h / 2;
+    const dx = cx - pdfX, dy = cy - pdfY;
+    if (dx * dx + dy * dy > r2) continue;
+    const ix = Math.floor(cx), iy = Math.floor(cy);
+    if (ix < 0 || ix >= gridW || iy < 0 || iy >= gridH) continue;
+    if (!area.mask[iy * gridW + ix]) continue;
+    const b = Math.round(it.fontSize);
+    buckets.set(b, (buckets.get(b) || 0) + 1);
+  }
+  let best = 0, bestCount = 0;
+  for (const [size, count] of buckets) {
+    if (count > bestCount) { best = size; bestCount = count; }
+  }
+  return best;
+}
+
+// Given tap coordinates, find:
+//   • `area`     — the area at the tap (or the area containing the
+//                   nearest text item if the tap is on a gutter)
+//   • `fontSize` — the dominant text height in a small neighbourhood
+//                   around the effective tap point, never crossing a
+//                   gutter
+//   • `pdfX/pdfY` — the effective PDF-coord point used to locate the
+//                   area and compute the font size; this is the tap
+//                   itself when it lands on text, or the nearest text
+//                   item's centre when it lands on a gutter.
+// Returns null only when there are no text items on the page.
+const LOCAL_FONT_RADII = [30, 60, 120]; // PDF px, tried in order
+export function findAreaAtTap(clientX, clientY) {
   if (!areasData) return null;
   const { labels, areas, gridW, gridH } = areasData;
   const { x: px, y: py } = screenToPdf(clientX, clientY);
-  const cx = Math.floor(px);
-  const cy = Math.floor(py);
-  if (cx < 0 || cy < 0 || cx >= gridW || cy >= gridH) return null;
+  let pdfX = px, pdfY = py;
 
-  let lbl = labels[cy * gridW + cx];
-  if (lbl === 0) {
-    let bestD2 = Infinity;
-    const r = HIT_LEEWAY_PX;
-    const x0 = Math.max(0, cx - r), x1 = Math.min(gridW - 1, cx + r);
-    const y0 = Math.max(0, cy - r), y1 = Math.min(gridH - 1, cy + r);
-    for (let yy = y0; yy <= y1; yy++) {
-      const row = yy * gridW;
-      const dy = yy - cy;
-      for (let xx = x0; xx <= x1; xx++) {
-        const l = labels[row + xx];
-        if (l === 0) continue;
-        const dx = xx - cx;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < bestD2) { bestD2 = d2; lbl = l; }
-      }
-    }
+  // Direct hit on a labeled pixel — use the tap point itself.
+  let area = null;
+  if (px >= 0 && py >= 0 && px < gridW && py < gridH) {
+    const lbl = labels[Math.floor(py) * gridW + Math.floor(px)];
+    if (lbl !== 0) area = areas.find(a => a.id === lbl) ?? null;
   }
-  if (lbl === 0) return null;
-  return areas.find(a => a.id === lbl) ?? null;
+
+  // Tap on a gutter (or off-page) — snap to the nearest text item and
+  // use ITS area as the point of interest.
+  if (!area) {
+    let nearest = null, bestD2 = Infinity;
+    for (const it of textItems) {
+      const icx = it.x + it.w / 2;
+      const icy = it.y + it.h / 2;
+      const dx = icx - px, dy = icy - py;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD2) { bestD2 = d2; nearest = it; }
+    }
+    if (!nearest) return null;
+    pdfX = nearest.x + nearest.w / 2;
+    pdfY = nearest.y + nearest.h / 2;
+    const ix = Math.floor(pdfX), iy = Math.floor(pdfY);
+    if (ix < 0 || ix >= gridW || iy < 0 || iy >= gridH) return null;
+    const lbl = labels[iy * gridW + ix];
+    if (lbl === 0) return null;
+    area = areas.find(a => a.id === lbl) ?? null;
+    if (!area) return null;
+  }
+
+  // Local font size — try increasing radii so a tap on a sparse area
+  // still resolves to a real font without bleeding into other parts
+  // of the area unnecessarily.
+  let fontSize = 0;
+  for (const r of LOCAL_FONT_RADII) {
+    fontSize = localFontSize(area, pdfX, pdfY, r);
+    if (fontSize > 0) break;
+  }
+  return { area, fontSize, pdfX, pdfY };
 }
 
 // Compute the view transform that:
-//   • puts the tap's y at the viewport centre
-//   • centres horizontally on the area's pixel column at the tap's y
-//     (so an L-shaped area centres on whichever arm the tap landed in)
-//   • scales so a glyph of the area's fontSize displays at `targetFontPx`
+//   • puts (pdfX, pdfY) at the viewport centre — the tap's effective
+//     point becomes the zoom centre
+//   • centres horizontally on the area's pixel column at pdfY (so an
+//     L-shaped area zooms to whichever arm contains the tap)
+//   • scales so a glyph of `fontSize` displays at `targetFontPx`
 //     screen pixels.
-export function transformForArea(area, clientX, clientY, targetFontPx) {
-  if (!area || !(area.fontSize > 0) || !(targetFontPx > 0)) return null;
-  const desiredEff = targetFontPx / area.fontSize;
+export function transformForArea(area, pdfX, pdfY, fontSize, targetFontPx) {
+  if (!area || !(fontSize > 0) || !(targetFontPx > 0)) return null;
+  const desiredEff = targetFontPx / fontSize;
   const visualScale = desiredEff / renderScale;
-  const r = canvas.getBoundingClientRect();
-  const tapPdfY = (clientY - r.top) / view.scale / renderScale;
-  const colX = areaRowCenterX(area, tapPdfY);
+  const colX = areaRowCenterX(area, pdfY);
   return {
-    x: window.innerWidth  / 2 - colX    * desiredEff,
-    y: window.innerHeight / 2 - tapPdfY * desiredEff,
+    x: window.innerWidth  / 2 - colX * desiredEff,
+    y: window.innerHeight / 2 - pdfY * desiredEff,
     scale: visualScale,
   };
 }

@@ -2,7 +2,7 @@ import {
   canvas,
   applyDelta, animateTo, scheduleQualityRender,
   transformForHome, transformForArea,
-  findAreaAtPoint, effectiveScale,
+  findAreaAtTap, effectiveScale,
 } from './viewer.js';
 import { getRegionZoomPx, setRegionZoomPx } from './storage.js';
 
@@ -198,26 +198,26 @@ function handleTap(clientX, clientY) {
 }
 
 function handleDoubleTap(clientX, clientY) {
-  const area = findAreaAtPoint(clientX, clientY);
-  // Tap on a gutter pixel (no area underneath, even with leeway) is
-  // a no-op regardless of zoom state.
-  if (!area || !(area.fontSize > 0)) return;
+  const tap = findAreaAtTap(clientX, clientY);
+  // No usable text on the page at all → no-op. (A tap on a gutter
+  // still resolves to the nearest text item by way of findAreaAtTap,
+  // so this only triggers when the page has no text items.)
+  if (!tap || !(tap.fontSize > 0)) return;
 
-  // Already zoomed and the user tapped an area of the same fontSize
-  // as the active one → return to home.
-  if (currentFontSize !== null && area.fontSize === currentFontSize) {
+  // Already zoomed and the user tapped an area whose local fontSize
+  // matches the active one → return to home.
+  if (currentFontSize !== null && tap.fontSize === currentFontSize) {
     goHome();
     return;
   }
 
-  // Either zooming in from home, or moving between areas of different
-  // fontSize. In both cases, set the new active fontSize, start the
-  // pinch-save window, and animate to the area at its stored (or
-  // default) reading size.
-  const targetPx = getRegionZoomPx(area.fontSize) ?? DEFAULT_READING_FONT_PX;
-  const target = transformForArea(area, clientX, clientY, targetPx);
+  // Either zooming in from home, or moving between fontSize groups.
+  // Set the new active fontSize, start the pinch-save window, and
+  // animate to the effective tap point at its preferred reading size.
+  const targetPx = getRegionZoomPx(tap.fontSize) ?? DEFAULT_READING_FONT_PX;
+  const target = transformForArea(tap.area, tap.pdfX, tap.pdfY, tap.fontSize, targetPx);
   if (!target) return;
-  currentFontSize = area.fontSize;
+  currentFontSize = tap.fontSize;
   lastDoubleTapTime = Date.now();
   animateTo(target.x, target.y, target.scale);
 }

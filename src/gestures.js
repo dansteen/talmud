@@ -1,63 +1,63 @@
 import {
   canvas,
   applyDelta, animateTo, scheduleQualityRender,
-  transformForHome, transformForRegion, transformForScroll,
-  findRegionAtPoint, effectiveScale, regionExtendsBeyondViewport,
+  transformForHome, transformForRegion,
+  findRegionAtTap, effectiveScale, isFullyZoomedOut,
 } from './viewer.js';
 import { getRegionZoomPx, setRegionZoomPx } from './storage.js';
 
-// Default on-screen font size (CSS px) used when the user double-taps a
-// region whose font size has no saved preference yet. Comfortable Hebrew
-// reading size on a phone.
+// Default on-screen reading size (CSS px) used the first time the
+// user double-taps a fontSize without a saved preference. Tuned for
+// comfortable Hebrew reading on a phone.
 const DEFAULT_READING_FONT_PX = 32;
 
-// Pinch sensitivity. Pinches are used as a *fine adjustment* to a region's
-// preferred reading size, not as a primary zoom — so we damp the raw
-// finger-distance change. 0.5 = half the natural responsiveness.
+// Pinch is a fine adjustment to the active fontSize's preferred
+// reading size — we damp the raw finger-distance change so it feels
+// tunable rather than swingy.
 const PINCH_SENSITIVITY = 0.5;
 
-// Fraction of the viewport to pan when double-tapping the focused region
-// off-centre. Same fraction applies to both axes.
-const SCROLL_FRAC = 0.7;
+// How long after a zoom event (double-tap or pinch) a subsequent
+// pinch is still considered "tuning" that should update the saved
+// reading-size preference for the most-recently double-tapped
+// fontSize. Each pinch resets the timer so a continuous string of
+// pinches keeps the window open.
+const ZOOM_TUNE_WINDOW_MS = 4000;
 
-// Fraction of the viewport (each axis) treated as the "centre" zone for
-// same-region double-tap. A tap whose offset from centre is smaller than
-// this on both axes counts as a centre tap → home.
-const CENTER_DEAD_ZONE = 0.10;
-
-// Active touches: identifier → {x, y}
-//
-// We use touch events instead of pointer events because, despite the spec,
-// pointer events on the canvas don't reliably fire on Android Chrome with
-// `touch-action: none`. Touch events do fire reliably and carry all the
-// information we need.
+// Touch tracking ────────────────────────────────────────────────────
 const touches = new Map();
 const touchStarts = new Map();
 let gestureStartTime = 0;
 let hasMoved = false;
-
 const MOVE_THRESHOLD = 8;
 
-// Double-tap tracking
+// Single-finger drag state — incremental pan when zoomed.
+let prevSingleX = 0, prevSingleY = 0;
+
+// Double-tap detection
 const doubleTap = { time: 0, x: 0, y: 0 };
 const DOUBLE_TAP_MS = 280;
 const DOUBLE_TAP_PX = 35;
 
-// Three-finger swipe thresholds
+// Three-finger swipe (prev/next page)
 const SWIPE_TIME_MS = 600;
 const SWIPE_DISTANCE_PX = 60;
 
-// Two-finger pinch/pan state
+// Two-finger pinch state
 let prevMidX = 0, prevMidY = 0, prevDist = 0;
-let lastPinchMidX = 0, lastPinchMidY = 0;
 let didPinch = false;
 
-// The region the user has zoomed into via double-tap or pinch. Drives the
-// "same vs different region" branch in handleDoubleTap and is also the
-// region we apply directional taps to when the user taps whitespace. Both
-// cleared when the user goes home.
-let currentRegion = null;
-let currentRegionId = null;
+// Interaction state ────────────────────────────────────────────────
+//
+// `currentFontSize` is the active fontSize the user has zoomed into
+// (null when home / fully zoomed out). It's set on a double-tap and
+// cleared when the user lands fully zoomed out via pinch.
+//
+// `lastZoomEventTime` resets on every zoom event (double-tap OR end
+// of pinch). A pinch whose start is within ZOOM_TUNE_WINDOW_MS of
+// this time persists its result as the new preferred reading size
+// for `currentFontSize`.
+let currentFontSize = null;
+let lastZoomEventTime = 0;
 
 let onPrev = null;
 let onNext = null;
@@ -66,10 +66,11 @@ function twoTouchState() {
   const pts = [...touches.values()];
   const dx = pts[1].x - pts[0].x;
   const dy = pts[1].y - pts[0].y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  const midX = (pts[0].x + pts[1].x) / 2;
-  const midY = (pts[0].y + pts[1].y) / 2;
-  return { dist, midX, midY };
+  return {
+    dist: Math.sqrt(dx * dx + dy * dy),
+    midX: (pts[0].x + pts[1].x) / 2,
+    midY: (pts[0].y + pts[1].y) / 2,
+  };
 }
 
 function onTouchStart(e) {
@@ -80,7 +81,11 @@ function onTouchStart(e) {
   }
   hasMoved = false;
   if (touches.size >= 1 && gestureStartTime === 0) gestureStartTime = Date.now();
-
+  if (touches.size === 1) {
+    const t = touches.values().next().value;
+    prevSingleX = t.x;
+    prevSingleY = t.y;
+  }
   if (touches.size === 2) {
     const s = twoTouchState();
     prevDist = s.dist;
@@ -91,7 +96,6 @@ function onTouchStart(e) {
 
 function onTouchMove(e) {
   e.preventDefault();
-
   for (const t of e.changedTouches) {
     if (!touches.has(t.identifier)) continue;
     touches.set(t.identifier, { x: t.clientX, y: t.clientY });
@@ -101,15 +105,24 @@ function onTouchMove(e) {
       if (Math.sqrt(dx * dx + dy * dy) > MOVE_THRESHOLD) hasMoved = true;
     }
   }
-
   const count = touches.size;
 
-  // Single finger: never pans, never zooms — reading mode.
-  if (count === 1) return;
+  // Single finger: pan only when zoomed; reading-mode no-op at home.
+  if (count === 1) {
+    if (currentFontSize !== null) {
+      const t = touches.values().next().value;
+      const dx = t.x - prevSingleX;
+      const dy = t.y - prevSingleY;
+      if (dx !== 0 || dy !== 0) applyDelta(dx, dy, 1, 0, 0);
+      prevSingleX = t.x;
+      prevSingleY = t.y;
+    }
+    return;
+  }
 
-  if (count === 2) {
+  // Two fingers: pinch only when zoomed. At home, ignore.
+  if (count === 2 && currentFontSize !== null) {
     const s = twoTouchState();
-    // Damp the scale ratio so pinches feel like fine adjustment.
     const rawDScale = prevDist > 0 ? s.dist / prevDist : 1;
     const dScale = 1 + (rawDScale - 1) * PINCH_SENSITIVITY;
     const dx = s.midX - prevMidX;
@@ -118,21 +131,17 @@ function onTouchMove(e) {
     prevDist = s.dist;
     prevMidX = s.midX;
     prevMidY = s.midY;
-    lastPinchMidX = s.midX;
-    lastPinchMidY = s.midY;
     didPinch = true;
     return;
   }
-
-  // 3+ fingers: don't pan/zoom — wait for release to detect a swipe.
+  // 3+ fingers: wait for release to detect a swipe.
 }
 
 function onTouchEnd(e) {
   e.preventDefault();
-
   const countBefore = touches.size;
   const wasOneFinger = countBefore === 1;
-  const wasThreeFingers = countBefore === 3;
+  const wasThreeFingers = countBefore >= 3;
 
   if (wasThreeFingers) detectThreeFingerSwipe();
 
@@ -152,15 +161,17 @@ function onTouchEnd(e) {
 
   if (touches.size === 0) {
     if (didPinch) {
-      // Save the pinch result as the preferred on-screen size for the
-      // region under the pinch midpoint, so future double-taps on regions
-      // of similar font size land at this zoom level.
-      const region = findRegionAtPoint(lastPinchMidX, lastPinchMidY);
-      if (region && region.fontSize > 0) {
-        setRegionZoomPx(region.fontSize, region.fontSize * effectiveScale());
-        currentRegion = region;
-        currentRegionId = region.id;
+      const now = Date.now();
+      const withinWindow = now - lastZoomEventTime <= ZOOM_TUNE_WINDOW_MS;
+      const zoomedOut = isFullyZoomedOut();
+      if (zoomedOut) {
+        // Pinch landed fully zoomed out — drop the active fontSize.
+        // (Per-rule exception: don't persist this as a saved level.)
+        currentFontSize = null;
+      } else if (withinWindow && currentFontSize !== null) {
+        setRegionZoomPx(currentFontSize, currentFontSize * effectiveScale());
       }
+      lastZoomEventTime = now;
       didPinch = false;
     }
     scheduleQualityRender();
@@ -168,29 +179,31 @@ function onTouchEnd(e) {
     gestureStartTime = 0;
   } else if (touches.size === 1) {
     prevDist = 0;
+    // Anchor incremental pan on the remaining finger so the next
+    // move doesn't compute a delta from a stale position.
+    const t = touches.values().next().value;
+    prevSingleX = t.x;
+    prevSingleY = t.y;
   }
 }
 
+// Three-finger swipe — direction is taken from the sign of the
+// average horizontal delta. Diagonals count (vertical component
+// is ignored as long as the horizontal travel exceeds the threshold).
 function detectThreeFingerSwipe() {
   const elapsed = Date.now() - gestureStartTime;
   if (elapsed > SWIPE_TIME_MS) return;
-
-  let sumDx = 0, sumDy = 0, n = 0;
+  let sumDx = 0, n = 0;
   for (const [id, cur] of touches) {
     const start = touchStarts.get(id);
     if (!start) continue;
     sumDx += cur.x - start.x;
-    sumDy += cur.y - start.y;
     n++;
   }
   if (n < 3) return;
   const dx = sumDx / n;
-  const dy = sumDy / n;
-
   if (Math.abs(dx) < SWIPE_DISTANCE_PX) return;
-  if (Math.abs(dy) > Math.abs(dx) * 0.7) return;
-
-  // RTL convention: swiping right = previous, swiping left = next
+  // RTL convention: swiping right = previous, left = next.
   if (dx > 0) onPrev?.();
   else onNext?.();
 }
@@ -208,74 +221,33 @@ function handleTap(clientX, clientY) {
     doubleTap.time = now;
     doubleTap.x = clientX;
     doubleTap.y = clientY;
-    // Single tap is a no-op — the drawer is summoned via the peek.
+    // Single tap is a no-op.
   }
 }
 
 function handleDoubleTap(clientX, clientY) {
-  const tapped = findRegionAtPoint(clientX, clientY);
+  const tap = findRegionAtTap(clientX, clientY);
+  // No usable text item to resolve the tap → no-op.
+  if (!tap || !(tap.fontSize > 0)) return;
 
-  // Tap on the focused region OR on whitespace while focused — both apply
-  // the directional model to the focused column. Whitespace doesn't drop
-  // us back to home; it scrolls/homes based on tap direction relative to
-  // the column we're already in.
-  const focusedTap = tapped
-    ? (tapped.id === currentRegionId)
-    : (currentRegion !== null);
-  if (focusedTap) {
-    handleFocusedTap(currentRegion, clientX, clientY);
-    return;
-  }
-
-  // Whitespace tap with nothing focused — no-op.
-  if (!tapped) return;
-
-  // Different region — zoom to it at its saved preferred size, centred on
-  // the tap so the user picks which part of the region they're zooming to.
-  const targetPx = getRegionZoomPx(tapped.fontSize) ?? DEFAULT_READING_FONT_PX;
-  const target = transformForRegion(tapped, clientX, clientY, targetPx);
-  if (!target) return;
-  currentRegion = tapped;
-  currentRegionId = tapped.id;
-  animateTo(target.x, target.y, target.scale);
-}
-
-function handleFocusedTap(region, clientX, clientY) {
-  // Only the centre returns home. A side tap scrolls if the focused column
-  // extends off-screen in that direction; otherwise it's a no-op (we don't
-  // pull the user back to home behind their back — they tap centre to home).
-  const w = window.innerWidth, h = window.innerHeight;
-  const dx = clientX - w / 2, dy = clientY - h / 2;
-  const dxN = Math.abs(dx) / w, dyN = Math.abs(dy) / h;
-  if (dxN < CENTER_DEAD_ZONE && dyN < CENTER_DEAD_ZONE) {
+  // Re-tap with the same fontSize → return home.
+  if (currentFontSize !== null && tap.fontSize === currentFontSize) {
     goHome();
     return;
   }
-  const horizontal = dxN > dyN;
-  const direction = horizontal ? (dx < 0 ? 'left' : 'right')
-                               : (dy < 0 ? 'up'   : 'down');
-  if (regionExtendsBeyondViewport(region, direction)) {
-    scrollFocused(direction);
-  }
-  // else: nothing to scroll to — leave the view alone.
-}
 
-function scrollFocused(direction) {
-  // To reveal content in `direction`, the canvas slides the opposite way.
-  let dx = 0, dy = 0;
-  switch (direction) {
-    case 'up':    dy = +window.innerHeight * SCROLL_FRAC; break;
-    case 'down':  dy = -window.innerHeight * SCROLL_FRAC; break;
-    case 'left':  dx = +window.innerWidth  * SCROLL_FRAC; break;
-    case 'right': dx = -window.innerWidth  * SCROLL_FRAC; break;
-  }
-  const target = transformForScroll(dx, dy);
+  // Zoom in from home, or hop to a different-fontSize region.
+  const targetPx = getRegionZoomPx(tap.fontSize) ?? DEFAULT_READING_FONT_PX;
+  const target = transformForRegion(tap.region, tap.pdfX, tap.pdfY, tap.fontSize, targetPx);
+  if (!target) return;
+  currentFontSize = tap.fontSize;
+  lastZoomEventTime = Date.now();
   animateTo(target.x, target.y, target.scale);
 }
 
 function goHome() {
-  currentRegion = null;
-  currentRegionId = null;
+  currentFontSize = null;
+  lastZoomEventTime = 0;
   const { x, y, scale } = transformForHome();
   animateTo(x, y, scale);
 }
@@ -285,17 +257,16 @@ export function returnHome() {
 }
 
 export function isZoomed() {
-  return currentRegionId !== null;
+  return currentFontSize !== null;
 }
 
 export function initGestures({ prev, next } = {}) {
   onPrev = prev;
   onNext = next;
-
-  canvas.addEventListener('touchstart', onTouchStart, { passive: false });
-  canvas.addEventListener('touchmove', onTouchMove, { passive: false });
-  canvas.addEventListener('touchend', onTouchEnd, { passive: false });
-  canvas.addEventListener('touchcancel', onTouchEnd, { passive: false });
+  canvas.addEventListener('touchstart',  onTouchStart, { passive: false });
+  canvas.addEventListener('touchmove',   onTouchMove,  { passive: false });
+  canvas.addEventListener('touchend',    onTouchEnd,   { passive: false });
+  canvas.addEventListener('touchcancel', onTouchEnd,   { passive: false });
 
   if (new URLSearchParams(location.search).has('debugGestures')) {
     enableGestureDebug();
@@ -318,14 +289,11 @@ function enableGestureDebug() {
   let n = 0;
   const note = (label, color) => {
     n++;
-    log.textContent = `${n}: ${label}`;
+    log.textContent = `${n}: ${label} fs=${currentFontSize ?? '-'}`;
     log.style.borderLeft = `4px solid ${color}`;
   };
-
-  const radii = ts => [...ts].map(t => `r${t.radiusX|0}x${t.radiusY|0}`).join(' ');
-
   canvas.addEventListener('touchstart', e => note(
-    `start n=${e.touches.length} tr=${touches.size} ${radii(e.changedTouches)}`, '#0af'
+    `start n=${e.touches.length} tr=${touches.size}`, '#0af'
   ), { passive: true });
   canvas.addEventListener('touchmove', e => note(
     `move n=${e.touches.length} moved=${hasMoved}`, '#0a8'

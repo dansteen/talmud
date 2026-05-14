@@ -1193,38 +1193,56 @@ export function animateTo(targetX, targetY, targetScale, onDone) {
 }
 
 // Compute a target view transform that:
-//   • places the tap's y at the viewport centre (the user picks which
-//     slice of a tall column they want to read),
-//   • horizontally brings that section of the column into the centre of
-//     the viewport — uses the region's labelled-cell extent in the row at
-//     the tap's y, so an L-shaped region centres on whichever segment the
-//     tap actually sits in (main column vs wrap-around line),
-//   • scales so a glyph of the region's fontSize displays at `targetFontPx`
-//     CSS pixels.
-// animateTo() runs the result through constrainView() afterwards, so the
-// page-edge constraint pulls things back if column-centring would push
-// the visible bbox edge past the screen edge.
-export function transformForRegion(region, clientX, clientY, targetFontPx) {
-  if (!region || !(region.fontSize > 0) || !(targetFontPx > 0)) return null;
-  const desiredEff = targetFontPx / region.fontSize;     // PDF → screen
+//   • places (pdfX, pdfY) at the viewport centre vertically — the tap's
+//     y becomes the viewport's vertical centre,
+//   • horizontally anchors so that:
+//      a) if the region's pixel-row width at pdfY fits within the
+//         viewport at the new scale, the row is centred,
+//      b) otherwise, if the row's right edge AND the tap point both
+//         fit within the viewport at the new scale, the row's right
+//         edge is pinned to the viewport's right edge (so RTL line
+//         starts are visible),
+//      c) otherwise, the tap point itself is centred,
+//   • scales so a glyph of `fontSize` displays at `targetFontPx`
+//     screen pixels.
+// animateTo() runs the result through constrainView() afterwards.
+export function transformForRegion(region, pdfX, pdfY, fontSize, targetFontPx) {
+  if (!region || !(fontSize > 0) || !(targetFontPx > 0)) return null;
+  const desiredEff = targetFontPx / fontSize;       // PDF → screen
   const visualScale = desiredEff / renderScale;
-  const r = canvas.getBoundingClientRect();
-  const tapPdfY = (clientY - r.top) / view.scale / renderScale;
-  const colX = regionRowCenterX(region, tapPdfY);
+  const W = window.innerWidth;
+  const row = regionRowRange(region, pdfY);
+
+  let xView;
+  if (row && row.w * desiredEff <= W) {
+    // Full row fits — centre it.
+    xView = W / 2 - row.center * desiredEff;
+  } else if (row && (row.max - pdfX) * desiredEff <= W) {
+    // Row doesn't fit, but tap → right edge fits. Pin the row's right
+    // edge to the viewport's right edge.
+    xView = W - row.max * desiredEff;
+  } else {
+    // Even tap + right edge can't fit. Centre on the tap.
+    xView = W / 2 - pdfX * desiredEff;
+  }
   return {
-    x: window.innerWidth  / 2 - colX    * desiredEff,
-    y: window.innerHeight / 2 - tapPdfY * desiredEff,
+    x: xView,
+    y: window.innerHeight / 2 - pdfY * desiredEff,
     scale: visualScale,
   };
 }
 
-// Horizontal centre of the region's labelled cells in the grid row that
-// contains `pdfY`. Returns a per-row centre, so a region whose shape
-// differs at different y's (like an L-shape) gets centred on the bit
-// near the tap, not on its overall centroid. Falls back to centroid →
-// bbox centre when the tap row has no labelled cells of this region.
-function regionRowCenterX(region, pdfY) {
-  const fallback = region.centroid?.x ?? (region.bbox.x + region.bbox.w / 2);
+// The x-range of the region's labelled cells in the grid row that
+// contains `pdfY`. Used by transformForRegion's horizontal anchoring.
+// Returns { min, max, w, center } in PDF coords; null when the tap row
+// has no cells of this region (fall back to the bbox).
+function regionRowRange(region, pdfY) {
+  const fallback = region?.bbox && {
+    min: region.bbox.x,
+    max: region.bbox.x + region.bbox.w,
+    w: region.bbox.w,
+    center: region.bbox.x + region.bbox.w / 2,
+  };
   if (!regionsData) return fallback;
   const { labels, gridW, gridH, cellSize } = regionsData;
   const ty = Math.floor(pdfY / cellSize);
@@ -1238,33 +1256,17 @@ function regionRowCenterX(region, pdfY) {
       if (px + cellSize > xMax) xMax = px + cellSize;
     }
   }
-  return xMin === Infinity ? fallback : (xMin + xMax) / 2;
+  if (xMin === Infinity) return fallback;
+  return { min: xMin, max: xMax, w: xMax - xMin, center: (xMin + xMax) / 2 };
 }
 
-// Whether the focused region extends past the viewport in `direction`
-// ('up' | 'down' | 'left' | 'right'). Used by the directional double-tap:
-// scroll if there's content to reveal, else fall through to home.
-export function regionExtendsBeyondViewport(region, direction) {
-  if (!region?.bbox) return false;
-  const eff = effectiveScale();
-  const left   = view.x + region.bbox.x * eff;
-  const right  = view.x + (region.bbox.x + region.bbox.w) * eff;
-  const top    = view.y + region.bbox.y * eff;
-  const bottom = view.y + (region.bbox.y + region.bbox.h) * eff;
-  const margin = 20; // px — anything tighter is effectively "at the edge"
-  switch (direction) {
-    case 'up':    return top    < -margin;
-    case 'down':  return bottom > window.innerHeight + margin;
-    case 'left':  return left   < -margin;
-    case 'right': return right  > window.innerWidth  + margin;
-    default:      return false;
-  }
-}
-
-// Pan by (dx, dy) screen pixels, keep current scale. Used by double-tap
-// scroll within the focused region.
-export function transformForScroll(dx, dy) {
-  return { x: view.x + dx, y: view.y + dy, scale: view.scale };
+// True when the view is at (or very close to) the fit-the-page home
+// scale — used by the pinch-save logic to avoid persisting a "zoomed
+// all the way out" preference for the active fontSize.
+export function isFullyZoomedOut() {
+  if (!textBbox) return true;
+  const minViewScale = fitScale() / renderScale;
+  return view.scale <= minViewScale + 0.001;
 }
 
 export function transformForHome() {
@@ -1300,41 +1302,86 @@ function screenToPdf(clientX, clientY) {
   };
 }
 
-// Look up the region under a screen point via the labeled grid. If the
-// tap lands directly on a labelled cell, return that region. Otherwise
-// expand outward and snap to the nearest labelled cell within
-// HIT_LEEWAY_CELLS — covers inter-line whitespace inside a column so a
-// tap between two glyphs of Gemara still counts as a Gemara tap. Cells
-// beyond that radius keep returning null (treated as whitespace).
-const HIT_LEEWAY_CELLS = 8;
-export function findRegionAtPoint(clientX, clientY) {
-  if (!regionsData) return null;
-  const { x: px, y: py } = screenToPdf(clientX, clientY);
-  const { labels, gridW, gridH, cellSize, regions: regs } = regionsData;
-  const cx = Math.floor(px / cellSize);
-  const cy = Math.floor(py / cellSize);
-  if (cx < 0 || cy < 0 || cx >= gridW || cy >= gridH) return null;
-
-  let lbl = labels[cy * gridW + cx];
-  if (lbl === 0) {
-    let bestD2 = Infinity;
-    const r = HIT_LEEWAY_CELLS;
-    const x0 = Math.max(0, cx - r), x1 = Math.min(gridW - 1, cx + r);
-    const y0 = Math.max(0, cy - r), y1 = Math.min(gridH - 1, cy + r);
-    for (let yy = y0; yy <= y1; yy++) {
-      const row = yy * gridW;
-      const dy = yy - cy;
-      for (let xx = x0; xx <= x1; xx++) {
-        const l = labels[row + xx];
-        if (l === 0) continue;
-        const dx = xx - cx;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < bestD2) { bestD2 = d2; lbl = l; }
-      }
-    }
+// Mode of text-item heights within `radius` PDF px of (pdfX, pdfY),
+// restricted to items whose centroid lies inside `region`'s pixel
+// mask. Bucketed to 1pt. Returns 0 if no items qualify.
+function localFontSize(region, pdfX, pdfY, radius) {
+  if (!regionsData) return 0;
+  const { labels, gridW, gridH, cellSize } = regionsData;
+  const r2 = radius * radius;
+  const buckets = new Map();
+  for (const it of textItems) {
+    if (!(it.fontSize > 0)) continue;
+    const cx = it.x + it.w / 2;
+    const cy = it.y + it.h / 2;
+    const dx = cx - pdfX, dy = cy - pdfY;
+    if (dx * dx + dy * dy > r2) continue;
+    const ix = Math.floor(cx / cellSize), iy = Math.floor(cy / cellSize);
+    if (ix < 0 || ix >= gridW || iy < 0 || iy >= gridH) continue;
+    if (labels[iy * gridW + ix] !== region.id) continue;
+    const b = Math.round(it.fontSize);
+    buckets.set(b, (buckets.get(b) || 0) + 1);
   }
-  if (lbl === 0) return null;
-  return regs.find(r => r.id === lbl) ?? null;
+  let best = 0, bestCount = 0;
+  for (const [size, count] of buckets) {
+    if (count > bestCount) { best = size; bestCount = count; }
+  }
+  return best;
+}
+
+// Given tap coordinates, resolve to:
+//   • `region`   — the region the tap is in (or the region containing
+//                   the nearest text item if the tap is on a gutter),
+//   • `fontSize` — the dominant text height in a small neighbourhood
+//                   around the effective tap point, never crossing a
+//                   region boundary (mask-gated),
+//   • `pdfX/pdfY` — the effective tap point: the tap itself when it
+//                   lands on text, or the nearest text item's centre
+//                   when it lands on a gutter.
+const LOCAL_FONT_RADII = [30, 60, 120]; // PDF px, tried in order
+export function findRegionAtTap(clientX, clientY) {
+  if (!regionsData) return null;
+  const { labels, gridW, gridH, cellSize, regions: regs } = regionsData;
+  const { x: px, y: py } = screenToPdf(clientX, clientY);
+  let pdfX = px, pdfY = py;
+
+  // Direct hit?
+  let region = null;
+  if (px >= 0 && py >= 0 && px < gridW * cellSize && py < gridH * cellSize) {
+    const lbl = labels[Math.floor(py / cellSize) * gridW + Math.floor(px / cellSize)];
+    if (lbl !== 0) region = regs.find(r => r.id === lbl) ?? null;
+  }
+
+  // Tap on a gutter (or off-page) — snap to the nearest text item.
+  if (!region) {
+    let nearest = null, bestD2 = Infinity;
+    for (const it of textItems) {
+      const icx = it.x + it.w / 2;
+      const icy = it.y + it.h / 2;
+      const dx = icx - px, dy = icy - py;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD2) { bestD2 = d2; nearest = it; }
+    }
+    if (!nearest) return null;
+    pdfX = nearest.x + nearest.w / 2;
+    pdfY = nearest.y + nearest.h / 2;
+    const ix = Math.floor(pdfX / cellSize), iy = Math.floor(pdfY / cellSize);
+    if (ix < 0 || ix >= gridW || iy < 0 || iy >= gridH) return null;
+    const lbl = labels[iy * gridW + ix];
+    if (lbl === 0) return null;
+    region = regs.find(r => r.id === lbl) ?? null;
+    if (!region) return null;
+  }
+
+  // Local fontSize — expanding radius so a tap on a sparse region
+  // still resolves to a real font without pulling in items from too
+  // far away.
+  let fontSize = 0;
+  for (const r of LOCAL_FONT_RADII) {
+    fontSize = localFontSize(region, pdfX, pdfY, r);
+    if (fontSize > 0) break;
+  }
+  return { region, fontSize, pdfX, pdfY };
 }
 
 export function applyDelta(dx, dy, dScale, originX, originY) {

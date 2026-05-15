@@ -73,16 +73,19 @@ let pixelImageData = null;
 // method either runs on the full page (first pass) or refines the regions
 // produced by the previous pass (second pass).
 const HYBRID_KEY = 'regionHybridConfig';
-const HYBRID_DEFAULTS  = { pixel: true, text: true, order: 'text,pixel', sideMerge: true };
+const HYBRID_DEFAULTS  = { pixel: true, text: true, order: 'auto', sideMerge: true };
 const OVERLAY_DEFAULTS = { mask: false, boxes: true, colors: true, ids: true };
 const hybrid = (() => {
   try {
     const saved = JSON.parse(localStorage.getItem(HYBRID_KEY) || 'null');
     if (saved && typeof saved === 'object') {
+      const order = ['auto', 'pixel,text', 'text,pixel'].includes(saved.order)
+        ? saved.order
+        : 'auto';
       return {
         pixel:     saved.pixel !== false,
         text:      !!saved.text,
-        order:     saved.order === 'text,pixel' ? 'text,pixel' : 'pixel,text',
+        order,
         sideMerge: saved.sideMerge !== false,
       };
     }
@@ -95,6 +98,9 @@ function persistHybrid() {
 
 // Diagnostic counters from the most recent side-column merge attempt.
 let lastMergeStats = null;
+// When hybrid.order === 'auto', records both orderings' pre-merge
+// region counts and which one was chosen. Surfaced in the status line.
+let lastAutoOrder = null;
 
 // Visual transform applied to the canvas via CSS
 export const view = {
@@ -689,27 +695,56 @@ function detectHybrid() {
   // layer. Independent of which methods are enabled.
   const gutterMask = detectGutters(grid, gridW, gridH, { minShort, minLong });
 
-  const order = hybrid.order === 'text,pixel' ? ['text', 'pixel'] : ['pixel', 'text'];
-  const enabled = order.filter(m => hybrid[m]);
+  const enabledMethods = ['pixel', 'text'].filter(m => hybrid[m]);
 
-  if (enabled.length === 0) {
+  if (enabledMethods.length === 0) {
+    lastAutoOrder = null;
     return { regions: [], labels: new Int32Array(N), gridW, gridH, cellSize: 1, grid, gutterMask };
   }
 
-  let regionList = [{ mask: fullPageMask(N) }];
-  let firstPass = true;
-  for (const method of enabled) {
-    const next = [];
-    for (const parent of regionList) {
-      const sub = method === 'pixel'
-        ? detectPixelWithin(parent.mask, grid, gridW, gridH, { minShort, minLong })
-        : detectTextWithin (parent.mask, textItems, gridW, gridH, regionOpts);
-      const minToSplit = firstPass ? 1 : 2;
-      if (sub.length >= minToSplit) next.push(...sub);
-      else next.push(parent);
+  // Run the sequential-refinement pipeline for a specific method ordering.
+  const runSequence = (methodSeq) => {
+    let regionList = [{ mask: fullPageMask(N) }];
+    let firstPass = true;
+    for (const method of methodSeq) {
+      const next = [];
+      for (const parent of regionList) {
+        const sub = method === 'pixel'
+          ? detectPixelWithin(parent.mask, grid, gridW, gridH, { minShort, minLong })
+          : detectTextWithin (parent.mask, textItems, gridW, gridH, regionOpts);
+        const minToSplit = firstPass ? 1 : 2;
+        if (sub.length >= minToSplit) next.push(...sub);
+        else next.push(parent);
+      }
+      regionList = next;
+      firstPass = false;
     }
-    regionList = next;
-    firstPass = false;
+    return regionList;
+  };
+
+  // Pick the method sequence to run. For "auto" with both methods
+  // enabled, try both orderings and take whichever produces more
+  // pre-merge regions (more separation = better detection). With
+  // only one method enabled, ordering is moot.
+  let regionList, chosenOrder = enabledMethods.join(',');
+  if (enabledMethods.length === 2 && hybrid.order === 'auto') {
+    const tryPT = runSequence(['pixel', 'text']);
+    const tryTP = runSequence(['text', 'pixel']);
+    if (tryTP.length > tryPT.length) {
+      regionList = tryTP;
+      chosenOrder = 'text,pixel';
+    } else {
+      regionList = tryPT;
+      chosenOrder = 'pixel,text';
+    }
+    lastAutoOrder = { tryPT: tryPT.length, tryTP: tryTP.length, chosen: chosenOrder };
+  } else {
+    const order = hybrid.order === 'text,pixel'
+      ? ['text', 'pixel']
+      : ['pixel', 'text'];
+    regionList = runSequence(order.filter(m => hybrid[m]));
+    chosenOrder = order.filter(m => hybrid[m]).join(',');
+    lastAutoOrder = null;
   }
 
   // Compute bbox/area for each region so the side-column merge can use
@@ -864,14 +899,20 @@ function createRegionDebugPanel() {
   methodRow.appendChild(makeToggle('merge sides', hybrid.sideMerge, v => { hybrid.sideMerge = v; persistHybrid(); applyHybrid(); }, 'sideMerge'));
   const orderSel = document.createElement('select');
   orderSel.style.cssText = 'margin-left:auto;background:rgba(40,30,20,0.9);color:inherit;border:1px solid rgba(255,230,170,0.3);border-radius:3px;padding:1px 4px;font:inherit;';
-  for (const [val, lbl] of [['pixel,text', 'pixel → text'], ['text,pixel', 'text → pixel']]) {
+  for (const [val, lbl] of [
+    ['auto',       'auto (most regions)'],
+    ['pixel,text', 'pixel → text'],
+    ['text,pixel', 'text → pixel'],
+  ]) {
     const o = document.createElement('option');
     o.value = val; o.textContent = lbl;
     if (hybrid.order === val) o.selected = true;
     orderSel.appendChild(o);
   }
   orderSel.addEventListener('change', () => {
-    hybrid.order = orderSel.value === 'text,pixel' ? 'text,pixel' : 'pixel,text';
+    hybrid.order = ['auto', 'pixel,text', 'text,pixel'].includes(orderSel.value)
+      ? orderSel.value
+      : 'auto';
     persistHybrid();
     applyHybrid();
   });
@@ -1114,10 +1155,16 @@ function updateDebugPanelStatus() {
   const lines = [];
   if (regionsData) {
     const { gridW, gridH, regions: regs } = regionsData;
-    const order = hybrid.order === 'text,pixel' ? ['text', 'pixel'] : ['pixel', 'text'];
-    const enabled = order.filter(m => hybrid[m]).join(' → ') || '(none)';
     lines.push(`${gridW}×${gridH} grid · ${regs.length} regions`);
-    lines.push(`pipeline: ${enabled}`);
+    if (lastAutoOrder) {
+      const a = lastAutoOrder;
+      const arrow = a.chosen === 'pixel,text' ? 'pixel → text' : 'text → pixel';
+      lines.push(`pipeline: auto → ${arrow} (P→T=${a.tryPT}, T→P=${a.tryTP})`);
+    } else {
+      const seq = ['pixel', 'text'].filter(m => hybrid[m]);
+      const ordered = hybrid.order === 'text,pixel' ? seq.slice().reverse() : seq;
+      lines.push(`pipeline: ${ordered.join(' → ') || '(none)'}`);
+    }
     if (lastMergeStats) {
       const s = lastMergeStats;
       lines.push(`merge: pre=${s.pre} L=${s.left} M=${s.middle} R=${s.right} → post=${regs.length}`);

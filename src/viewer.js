@@ -1285,21 +1285,25 @@ export function animateTo(targetX, targetY, targetScale, onDone) {
 // the viewport edge after a double-tap zoom. The gap exposes a bit of
 // the next column across the gutter — context for the reader.
 const CONTEXT_MIN_PX = 40;
-// Small pad applied when we pin a region edge near the viewport edge
-// to enforce the "left/bottom priority". Keeps the region edge from
-// being flush with the screen edge.
-const CONTEXT_EDGE_PAD = 8;
+// Always-reserved screen-px strip on the right / top of the viewport.
+// Every double-tap zoom carves these strips out of the usable area
+// before running the priority ladder, so a sliver of context past the
+// region's right/top edge is always visible (regardless of which
+// ladder branch fires — even when the region "fills the page").
+const ALWAYS_RIGHT_PX = 10;
+const ALWAYS_TOP_PX = 10;
 
 // Compute a target view transform that, in order of preference:
 //
 //   horizontal axis (priority LEFT for context overflow):
-//     P1: if region.bbox.w fits the viewport at the new scale, use
-//         the full bbox extent
+//     P1: if region.bbox.w fits the effective viewport at the new
+//         scale, use the full bbox extent
 //     P2: else if row.w (per-row extent at the tap's y) fits, use
 //         that
-//     P3: else (the chosen extent is wider than viewport) — if
-//         tap → row.max still fits, pin row's right edge to the
-//         viewport's right edge; otherwise centre on the tap.
+//     P3: else (the chosen extent is wider than the effective
+//         viewport) — if tap → row.max still fits, pin row's right
+//         edge to the effective viewport's right edge; otherwise
+//         centre on the tap.
 //
 //   vertical axis (priority BOTTOM):
 //     P1: if region.bbox.h fits, use the full bbox extent
@@ -1307,13 +1311,19 @@ const CONTEXT_EDGE_PAD = 8;
 //         that
 //     P3: else (nothing fits vertically) — centre on the tap.
 //
+// "Effective viewport" excludes a fixed `ALWAYS_RIGHT_PX` strip on
+// the right and `ALWAYS_TOP_PX` strip on the top — those strips are
+// always reserved as context so a sliver past the region's right/top
+// edge stays visible regardless of which ladder branch fires.
+//
 // Whichever extent is picked, the in-axis positioning applies the
-// previously-defined left/bottom-priority context rule:
-//   - slack ≥ 2*CTX_MIN → centre the extent in the viewport,
-//   - slack ≥ CTX_MIN   → pin the priority-opposite edge near the
-//                         viewport edge (LEFT: pin right edge; BOTTOM:
-//                         pin top edge), so all remaining slack lands
-//                         on the priority side,
+// previously-defined left/bottom-priority context rule WITHIN the
+// effective viewport:
+//   - slack ≥ 2*CTX_MIN → centre the extent in the effective viewport,
+//   - slack ≥ CTX_MIN   → pin the priority-opposite edge to the
+//                         effective viewport's far edge (LEFT: pin
+//                         right edge; BOTTOM: pin top edge), so all
+//                         remaining slack lands on the priority side,
 //   - slack <  CTX_MIN  → centre (region nearly fills, no real
 //                         context room).
 //
@@ -1324,65 +1334,70 @@ const CONTEXT_EDGE_PAD = 8;
 // content within textBbox.
 export function transformForRegion(region, pdfX, pdfY, fontSize, targetFontPx) {
   if (!region || !(fontSize > 0) || !(targetFontPx > 0)) return null;
-  const s = targetFontPx / fontSize;                // PDF → screen
+  const s = targetFontPx / fontSize;
   const visualScale = s / renderScale;
   const W = window.innerWidth;
   const H = window.innerHeight;
+  const W_eff = W - ALWAYS_RIGHT_PX;   // usable horizontal range: [0, W_eff]
+  const H_eff = H - ALWAYS_TOP_PX;     // usable vertical range:   [ALWAYS_TOP_PX, H]
   const CTX = CONTEXT_MIN_PX;
-  const PAD = CONTEXT_EDGE_PAD;
   const row = regionRowRange(region, pdfY);
   const col = regionColRange(region, pdfX);
 
-  // Apply the slack rule to one axis. `pinHigh = true` pins the max
-  // end near the viewport's far edge (LEFT priority horizontally);
-  // `pinHigh = false` pins the min end near 0 (BOTTOM priority
-  // vertically — pinning column top to viewport top exposes context
-  // below the region).
-  const anchor = (min, max, viewportSize, pinHigh) => {
-    const slack = viewportSize - (max - min) * s;
+  // Horizontal anchor — priority LEFT. The effective viewport runs
+  // [0, W_eff]; the reserved strip is at [W_eff, W].
+  const anchorH = (min, max) => {
+    const slack = W_eff - (max - min) * s;
     const center = (min + max) / 2;
-    if (slack >= 2 * CTX) return viewportSize / 2 - center * s;
-    if (slack >= CTX) {
-      return pinHigh
-        ? viewportSize - PAD - max * s
-        : PAD - min * s;
-    }
-    return viewportSize / 2 - center * s;
+    if (slack >= 2 * CTX) return W_eff / 2 - center * s;
+    if (slack >= CTX)     return W_eff - max * s;       // pin max to inner right
+    return W_eff / 2 - center * s;
   };
 
-  // Pick the widest extent that still fits horizontally.
+  // Vertical anchor — priority BOTTOM. The effective viewport runs
+  // [ALWAYS_TOP_PX, H]; the reserved strip is at [0, ALWAYS_TOP_PX].
+  const anchorV = (min, max) => {
+    const slack = H_eff - (max - min) * s;
+    const center = (min + max) / 2;
+    if (slack >= 2 * CTX) return ALWAYS_TOP_PX + H_eff / 2 - center * s;
+    if (slack >= CTX)     return ALWAYS_TOP_PX - min * s;   // pin min to inner top
+    return ALWAYS_TOP_PX + H_eff / 2 - center * s;
+  };
+
+  // Pick the widest extent that still fits within the effective
+  // viewport horizontally.
   let hMin, hMax;
-  if (region.bbox.w * s <= W) {
+  if (region.bbox.w * s <= W_eff) {
     hMin = region.bbox.x;
     hMax = region.bbox.x + region.bbox.w;
-  } else if (row && row.w * s <= W) {
+  } else if (row && row.w * s <= W_eff) {
     hMin = row.min;
     hMax = row.max;
   }
   // Pick the tallest extent that still fits vertically.
   let vMin, vMax;
-  if (region.bbox.h * s <= H) {
+  if (region.bbox.h * s <= H_eff) {
     vMin = region.bbox.y;
     vMax = region.bbox.y + region.bbox.h;
-  } else if (col && col.h * s <= H) {
+  } else if (col && col.h * s <= H_eff) {
     vMin = col.min;
     vMax = col.max;
   }
 
   let xView;
   if (hMin !== undefined) {
-    xView = anchor(hMin, hMax, W, true);
-  } else if (row && (row.max - pdfX) * s <= W) {
-    xView = W - row.max * s;          // pin row right edge
+    xView = anchorH(hMin, hMax);
+  } else if (row && (row.max - pdfX) * s <= W_eff) {
+    xView = W_eff - row.max * s;          // pin row right to inner right
   } else {
-    xView = W / 2 - pdfX * s;         // centre on tap
+    xView = W_eff / 2 - pdfX * s;         // centre on tap within effective viewport
   }
 
   let yView;
   if (vMin !== undefined) {
-    yView = anchor(vMin, vMax, H, false);
+    yView = anchorV(vMin, vMax);
   } else {
-    yView = H / 2 - pdfY * s;
+    yView = ALWAYS_TOP_PX + H_eff / 2 - pdfY * s;
   }
 
   return { x: xView, y: yView, scale: visualScale };

@@ -261,44 +261,70 @@ function restoreScrollForView(view) {
   });
 }
 
-// ── Peek: tap to open, drag-up to open ──
+// ── Peek: mostly-vertical swipe up opens the drawer ──
+//
+// No tap activation and no horizontal-swipe activation — the only way
+// to raise the drawer from the peek zone is a deliberate upward drag
+// where vertical travel dominates horizontal travel.
 
 function bindPeek() {
+  let startX = null;
   let startY = null;
-  let dragging = false;
+  let dragging = false; // crossed the ACTIVATION_PX threshold while vertical
+  let abandoned = false; // gesture started horizontally; ignore for the rest
+
+  const ACTIVATION_PX = 28;          // upward travel required to commit
+  const VERTICAL_DOMINANCE_RATIO = 1.5; // |dy| must exceed this × |dx|
 
   const releasePeek = () => {
+    startX = null;
     startY = null;
+    dragging = false;
+    abandoned = false;
     peekEl.classList.remove('dragging');
   };
 
   peekEl.addEventListener('pointerdown', e => {
     e.preventDefault();
-    peekEl.setPointerCapture(e.pointerId);
+    startX = e.clientX;
     startY = e.clientY;
     dragging = false;
-    peekEl.classList.add('dragging');
+    abandoned = false;
+    // Real touch pointers capture cleanly; synthetic events may throw
+    // NotFoundError if the pointerId isn't active. Either way, we want
+    // startY set above so the move handler can run.
+    try { peekEl.setPointerCapture(e.pointerId); } catch { /* ignore */ }
   });
 
   peekEl.addEventListener('pointermove', e => {
-    if (startY == null) return;
+    if (startY == null || abandoned) return;
+    const dx = e.clientX - startX;
     const dy = e.clientY - startY;
-    if (dy < -6) dragging = true;
-    if (dragging && dy < -28) {
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
+
+    // Only show the dragging affordance once intent is clearly upward.
+    if (!dragging && dy < -6 && ady > VERTICAL_DOMINANCE_RATIO * adx) {
+      dragging = true;
+      peekEl.classList.add('dragging');
+    }
+
+    // A clearly-horizontal early move kills the gesture — the user isn't
+    // trying to raise the drawer.
+    if (!dragging && adx > 6 && adx > ady) {
+      abandoned = true;
+      peekEl.classList.remove('dragging');
+      return;
+    }
+
+    if (dragging && dy < -ACTIVATION_PX) {
       // Pulled up far enough — commit
       releasePeek();
       open(VIEW_SLIDERS);
     }
   });
 
-  peekEl.addEventListener('pointerup', () => {
-    const wasDragging = dragging;
-    if (startY != null) releasePeek();
-    if (!wasDragging) {
-      // Treat as tap → open
-      open(VIEW_SLIDERS);
-    }
-  });
+  peekEl.addEventListener('pointerup', releasePeek);
   peekEl.addEventListener('pointercancel', releasePeek);
 }
 

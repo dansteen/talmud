@@ -1281,44 +1281,111 @@ export function animateTo(targetX, targetY, targetScale, onDone) {
   }, { once: true });
 }
 
+// Minimum screen-px gap we try to keep between the region's edge and
+// the viewport edge after a double-tap zoom. The gap exposes a bit of
+// the next column across the gutter — context for the reader.
+const CONTEXT_MIN_PX = 40;
+// Small pad applied when we pin a region edge near the viewport edge
+// to enforce the "left/bottom priority". Keeps the region edge from
+// being flush with the screen edge.
+const CONTEXT_EDGE_PAD = 8;
+
 // Compute a target view transform that:
-//   • places (pdfX, pdfY) at the viewport centre vertically — the tap's
-//     y becomes the viewport's vertical centre,
-//   • horizontally anchors so that:
-//      a) if the region's pixel-row width at pdfY fits within the
-//         viewport at the new scale, the row is centred,
-//      b) otherwise, if the row's right edge AND the tap point both
-//         fit within the viewport at the new scale, the row's right
-//         edge is pinned to the viewport's right edge (so RTL line
-//         starts are visible),
-//      c) otherwise, the tap point itself is centred,
+//   • horizontally and vertically positions the tapped region so a
+//     "context margin" (≥ CONTEXT_MIN_PX) shows on the opposite side
+//     of the gutter when there's room — i.e. you see a bit of the
+//     adjacent column. If only one side has room, priority goes to:
+//       — LEFT (horizontal), so RTL line starts are visible,
+//       — BOTTOM (vertical), so the next line(s) are visible.
+//   • when the region fills the viewport in a direction, falls back
+//     to: row exceeds → pin row's right edge to viewport right; col
+//     exceeds → centre on the tap.
 //   • scales so a glyph of `fontSize` displays at `targetFontPx`
 //     screen pixels.
-// animateTo() runs the result through constrainView() afterwards.
+// animateTo() runs the result through constrainView() afterwards,
+// which will clamp the view to the text bbox — for edge regions that
+// reach the textBbox boundary, the constraint naturally flips the
+// context to whichever side actually has content.
 export function transformForRegion(region, pdfX, pdfY, fontSize, targetFontPx) {
   if (!region || !(fontSize > 0) || !(targetFontPx > 0)) return null;
   const desiredEff = targetFontPx / fontSize;       // PDF → screen
   const visualScale = desiredEff / renderScale;
   const W = window.innerWidth;
+  const H = window.innerHeight;
   const row = regionRowRange(region, pdfY);
+  const col = regionColRange(region, pdfX);
+  const CTX = CONTEXT_MIN_PX;
+  const PAD = CONTEXT_EDGE_PAD;
 
+  // ── Horizontal ──
   let xView;
-  if (row && row.w * desiredEff <= W) {
-    // Full row fits — centre it.
-    xView = W / 2 - row.center * desiredEff;
-  } else if (row && (row.max - pdfX) * desiredEff <= W) {
-    // Row doesn't fit, but tap → right edge fits. Pin the row's right
-    // edge to the viewport's right edge.
-    xView = W - row.max * desiredEff;
-  } else {
-    // Even tap + right edge can't fit. Centre on the tap.
+  if (!row) {
     xView = W / 2 - pdfX * desiredEff;
+  } else {
+    const remainder = W - row.w * desiredEff;
+    if (remainder >= 2 * CTX) {
+      // Comfortable fit — centre, context on both sides.
+      xView = W / 2 - row.center * desiredEff;
+    } else if (remainder >= CTX) {
+      // Tight fit — only one side has room for context. Priority LEFT:
+      // pin row's right edge near the viewport's right edge so all the
+      // remainder space lands on the left.
+      xView = W - PAD - row.max * desiredEff;
+    } else if (remainder >= 0) {
+      // Region nearly fills horizontally — centre, no context emphasis.
+      xView = W / 2 - row.center * desiredEff;
+    } else if ((row.max - pdfX) * desiredEff <= W) {
+      // Row exceeds viewport but tap → right edge fits. Pin row's
+      // right edge to the viewport's right edge (no pad: region fills
+      // the page horizontally — the "exception" case).
+      xView = W - row.max * desiredEff;
+    } else {
+      xView = W / 2 - pdfX * desiredEff;
+    }
   }
-  return {
-    x: xView,
-    y: window.innerHeight / 2 - pdfY * desiredEff,
-    scale: visualScale,
-  };
+
+  // ── Vertical ──
+  let yView;
+  if (!col) {
+    yView = H / 2 - pdfY * desiredEff;
+  } else {
+    const remainder = H - col.h * desiredEff;
+    if (remainder >= 2 * CTX) {
+      yView = H / 2 - col.center * desiredEff;
+    } else if (remainder >= CTX) {
+      // Priority BOTTOM: pin column's top edge near viewport top.
+      yView = PAD - col.min * desiredEff;
+    } else if (remainder >= 0) {
+      yView = H / 2 - col.center * desiredEff;
+    } else {
+      // Column taller than viewport — centre on tap.
+      yView = H / 2 - pdfY * desiredEff;
+    }
+  }
+
+  return { x: xView, y: yView, scale: visualScale };
+}
+
+// The y-range of the region's labelled cells in the grid column that
+// contains `pdfX`. Vertical analogue of regionRowRange — for an
+// L-shaped region the vertical extent at the tap x can differ from
+// the bbox height. Returns null when the column has no cells of this
+// region.
+function regionColRange(region, pdfX) {
+  if (!region || !regionsData) return null;
+  const { labels, gridW, gridH, cellSize } = regionsData;
+  const tx = Math.floor(pdfX / cellSize);
+  if (tx < 0 || tx >= gridW) return null;
+  let yMin = Infinity, yMax = -Infinity;
+  for (let y = 0; y < gridH; y++) {
+    if (labels[y * gridW + tx] === region.id) {
+      const py = y * cellSize;
+      if (py < yMin) yMin = py;
+      if (py + cellSize > yMax) yMax = py + cellSize;
+    }
+  }
+  if (yMin === Infinity) return null;
+  return { min: yMin, max: yMax, h: yMax - yMin, center: (yMin + yMax) / 2 };
 }
 
 // The x-range of the region's labelled cells in the grid row that

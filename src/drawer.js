@@ -460,15 +460,24 @@ function renderSliders(state) {
     }
   }
 
-  // Add or re-render in current `open` order
-  const fragment = document.createDocumentFragment();
+  // Reconcile in place — walk state.open and only touch the DOM when a row
+  // is missing or out of position. Re-appending every row via a fragment
+  // would detach them all momentarily and reset sliderStackEl.scrollTop,
+  // which we need to preserve across renders (e.g., on switchTo / jumpTo
+  // when close() then captures the scroll position).
+  let cursor = sliderStackEl.firstElementChild;
   for (const slug of state.open) {
     let row = existing.get(slug);
-    if (!row) row = createSliderRow(slug);
+    if (!row) {
+      row = createSliderRow(slug);
+      sliderStackEl.insertBefore(row, cursor);
+    } else if (row !== cursor) {
+      sliderStackEl.insertBefore(row, cursor);
+    } else {
+      cursor = cursor.nextElementSibling;
+    }
     updateSliderRow(row, slug, state);
-    fragment.appendChild(row);
   }
-  sliderStackEl.appendChild(fragment);
 }
 
 function scrollSliderIntoView(slug) {

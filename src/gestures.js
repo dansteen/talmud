@@ -58,9 +58,32 @@ let didPinch = false;
 // for `currentFontSize`.
 let currentFontSize = null;
 let lastZoomEventTime = 0;
+// Most recent findRegionAtTap result — populated only on double-tap,
+// so the debug panel can show what area is currently focused.
+let currentTap = null;
 
 let onPrev = null;
 let onNext = null;
+
+// Notify any listeners (the debug panel) that the interaction state
+// changed. Keep this lean — the listener pulls saved settings etc.
+// from storage on its own.
+function emitZoomState() {
+  document.dispatchEvent(new CustomEvent('regionzoom', {
+    detail: {
+      currentFontSize,
+      lastZoomEventTime,
+      tuneWindowMs: ZOOM_TUNE_WINDOW_MS,
+      currentTap: currentTap ? {
+        regionId: currentTap.region?.id ?? null,
+        bbox:     currentTap.region?.bbox ?? null,
+        fontSize: currentTap.fontSize,
+        pdfX:     currentTap.pdfX,
+        pdfY:     currentTap.pdfY,
+      } : null,
+    },
+  }));
+}
 
 function twoTouchState() {
   const pts = [...touches.values()];
@@ -168,11 +191,13 @@ function onTouchEnd(e) {
         // Pinch landed fully zoomed out — drop the active fontSize.
         // (Per-rule exception: don't persist this as a saved level.)
         currentFontSize = null;
+        currentTap = null;
       } else if (withinWindow && currentFontSize !== null) {
         setRegionZoomPx(currentFontSize, currentFontSize * effectiveScale());
       }
       lastZoomEventTime = now;
       didPinch = false;
+      emitZoomState();
     }
     scheduleQualityRender();
     prevDist = 0;
@@ -241,13 +266,17 @@ function handleDoubleTap(clientX, clientY) {
   const target = transformForRegion(tap.region, tap.pdfX, tap.pdfY, tap.fontSize, targetPx);
   if (!target) return;
   currentFontSize = tap.fontSize;
+  currentTap = tap;
   lastZoomEventTime = Date.now();
+  emitZoomState();
   animateTo(target.x, target.y, target.scale);
 }
 
 function goHome() {
   currentFontSize = null;
+  currentTap = null;
   lastZoomEventTime = 0;
+  emitZoomState();
   const { x, y, scale } = transformForHome();
   animateTo(x, y, scale);
 }

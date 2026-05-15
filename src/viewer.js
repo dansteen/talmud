@@ -7,6 +7,7 @@ import {
   detectGutters,
   detectRegions as detectPixelRegions,
 } from './regionsPixel.js';
+import { getAllRegionZooms } from './storage.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -801,13 +802,13 @@ function createRegionDebugPanel() {
     font: 11px ui-monospace, monospace;
     pointer-events: auto; user-select: none;
     box-shadow: 0 2px 12px rgba(0,0,0,0.6);
-    min-width: 220px;
+    min-width: 240px;
   `;
 
   const titleRow = document.createElement('div');
   titleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;';
   const title = document.createElement('div');
-  title.textContent = '⠿ region tuning';
+  title.textContent = '⠿ debug';
   title.style.cssText = 'font-weight:600;opacity:0.7;cursor:move;flex:1;';
   titleRow.appendChild(title);
 
@@ -822,6 +823,38 @@ function createRegionDebugPanel() {
 
   panel.appendChild(titleRow);
   enablePanelDrag(panel, title);
+
+  // Tab bar — switches between region tuning and zoom inspector.
+  const tabBar = document.createElement('div');
+  tabBar.style.cssText =
+    'display:flex;gap:2px;margin:0 -12px 8px;padding:0 10px;' +
+    'border-bottom:1px solid rgba(255,230,170,0.2);';
+  const regionsTab = document.createElement('div');
+  const zoomTab = document.createElement('div');
+  zoomTab.style.display = 'none';
+  const tabBtn = (label, panelEl, active) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText =
+      'background:none;color:inherit;border:none;' +
+      'padding:3px 10px;font:inherit;cursor:pointer;' +
+      'border-bottom:2px solid transparent;margin-bottom:-1px;';
+    if (active) b.style.borderBottomColor = 'rgba(255,230,170,0.9)';
+    b.addEventListener('click', () => {
+      regionsTab.style.display = (panelEl === regionsTab) ? '' : 'none';
+      zoomTab.style.display    = (panelEl === zoomTab)    ? '' : 'none';
+      for (const t of tabBar.querySelectorAll('button')) {
+        t.style.borderBottomColor = 'transparent';
+      }
+      b.style.borderBottomColor = 'rgba(255,230,170,0.9)';
+    });
+    return b;
+  };
+  tabBar.appendChild(tabBtn('regions', regionsTab, true));
+  tabBar.appendChild(tabBtn('zoom',    zoomTab,    false));
+  panel.appendChild(tabBar);
+
+  // ── Regions tab ─────────────────────────────────────────────────
 
   // Method selection: which detectors to apply and in what order.
   const methodRow = document.createElement('div');
@@ -844,62 +877,66 @@ function createRegionDebugPanel() {
   });
   methodRow.appendChild(orderSel);
   orderSelRef = orderSel;
-  panel.appendChild(methodRow);
+  regionsTab.appendChild(methodRow);
 
-  // Overlay visibility toggles. Grouped on one row to keep the panel compact.
   const toggleRow = document.createElement('div');
   toggleRow.style.cssText = 'display:flex;gap:12px;margin:2px 0 8px;';
   toggleRow.appendChild(makeToggle('mask',   overlayDisplay.mask,   v => { overlayDisplay.mask   = v; drawRegionOverlay(); }, 'mask'));
   toggleRow.appendChild(makeToggle('boxes',  overlayDisplay.boxes,  v => { overlayDisplay.boxes  = v; drawRegionOverlay(); }, 'boxes'));
   toggleRow.appendChild(makeToggle('colors', overlayDisplay.colors, v => { overlayDisplay.colors = v; drawRegionOverlay(); }, 'colors'));
   toggleRow.appendChild(makeToggle('ids',    overlayDisplay.ids,    v => { overlayDisplay.ids    = v; drawRegionOverlay(); }, 'ids'));
-  panel.appendChild(toggleRow);
+  regionsTab.appendChild(toggleRow);
 
   for (const c of PANEL_CONTROLS) {
     const initial = (regionOpts[c.key] ?? regionTuneFromUrl()[c.key]) ?? c.def;
     regionOpts[c.key] = initial;
-
     const row = document.createElement('label');
     row.style.cssText = 'display:flex;align-items:center;gap:8px;margin:4px 0;';
-
     const name = document.createElement('span');
     name.textContent = c.label;
     name.style.cssText = 'flex:0 0 110px;';
     row.appendChild(name);
-
     const input = document.createElement('input');
     input.type = 'range';
     input.min = c.min; input.max = c.max; input.step = c.step;
     input.value = initial;
     input.style.cssText = 'flex:1;min-width:60px;';
     row.appendChild(input);
-
     const val = document.createElement('span');
     val.textContent = formatVal(initial, c.step);
     val.style.cssText = 'flex:0 0 50px;text-align:right;';
     row.appendChild(val);
-
     input.addEventListener('input', () => {
       const v = parseFloat(input.value);
       val.textContent = formatVal(v, c.step);
       recomputeRegions({ [c.key]: v });
     });
-
     sliderRefs.set(c.key, { input, val, step: c.step });
-    panel.appendChild(row);
+    regionsTab.appendChild(row);
   }
 
   panelStatusEl = document.createElement('div');
   panelStatusEl.style.cssText = 'margin-top:6px;opacity:0.75;font-size:10px;line-height:1.4;';
-  panel.appendChild(panelStatusEl);
+  regionsTab.appendChild(panelStatusEl);
 
   mouseCoordEl = document.createElement('div');
   mouseCoordEl.style.cssText = 'margin-top:4px;opacity:0.75;font-size:10px;line-height:1.4;';
   mouseCoordEl.textContent = 'px: -';
-  panel.appendChild(mouseCoordEl);
+  regionsTab.appendChild(mouseCoordEl);
+
+  panel.appendChild(regionsTab);
+
+  // ── Zoom tab ────────────────────────────────────────────────────
+
+  zoomPanelEl = document.createElement('div');
+  zoomPanelEl.style.cssText = 'line-height:1.5;font-size:11px;white-space:pre-line;';
+  zoomPanelEl.textContent = 'no active zoom';
+  zoomTab.appendChild(zoomPanelEl);
+  panel.appendChild(zoomTab);
 
   document.body.appendChild(panel);
   updateDebugPanelStatus();
+  updateZoomPanel(null);  // initial render — no event yet
 
   // Track mouse position and report it as pixel (x, y) coordinates in
   // the rendered image. Out-of-grid positions show as -.
@@ -918,6 +955,58 @@ function createRegionDebugPanel() {
     const py = Math.floor((relY / rect.height) * pageH);
     mouseCoordEl.textContent = `px: (${px}, ${py}) / ${gridW}×${gridH}`;
   });
+
+  // The interaction state lives in gestures.js — listen for the
+  // event it emits whenever zoom changes and re-render the zoom tab.
+  // We also tick once a second so the "since X seconds" line keeps
+  // advancing while the tab is visible.
+  document.addEventListener('regionzoom', e => updateZoomPanel(e.detail));
+  setInterval(() => {
+    if (zoomTab && zoomTab.style.display !== 'none') updateZoomPanel(null);
+  }, 1000);
+}
+
+let zoomPanelEl = null;
+let lastZoomDetail = null;
+function updateZoomPanel(detail) {
+  if (!zoomPanelEl) return;
+  if (detail) lastZoomDetail = detail;
+  const d = lastZoomDetail;
+  const lines = [];
+
+  if (!d || d.currentFontSize == null) {
+    lines.push('zoomed: no (home)');
+  } else {
+    lines.push(`zoomed: yes`);
+    lines.push(`active fontSize: ${d.currentFontSize}`);
+    if (d.currentTap) {
+      const t = d.currentTap;
+      lines.push(`region: #${t.regionId}`);
+      if (t.bbox) {
+        lines.push(`  bbox: (${t.bbox.x|0},${t.bbox.y|0} ${t.bbox.w|0}×${t.bbox.h|0})`);
+      }
+      lines.push(`tap pdf: (${(t.pdfX|0)}, ${(t.pdfY|0)})`);
+    }
+    if (d.lastZoomEventTime) {
+      const since = Date.now() - d.lastZoomEventTime;
+      const inWindow = since <= (d.tuneWindowMs ?? 4000);
+      lines.push(`tune window: ${inWindow ? 'open' : 'closed'} (${(since/1000).toFixed(1)}s since)`);
+    }
+  }
+
+  const zooms = getAllRegionZooms();
+  lines.push('');
+  lines.push(`saved (${zooms.length}):`);
+  if (zooms.length === 0) {
+    lines.push('  (none yet)');
+  } else {
+    for (const z of zooms) {
+      const active = d?.currentFontSize != null
+        && Math.abs(z.fontSize - d.currentFontSize) / d.currentFontSize < 0.1;
+      lines.push(`  ${active ? '▸' : ' '} ${z.fontSize.toFixed(1)}pt → ${z.px.toFixed(1)}px`);
+    }
+  }
+  zoomPanelEl.textContent = lines.join('\n');
 }
 
 function makeToggle(label, initial, onChange, refKey) {
@@ -1233,20 +1322,16 @@ export function transformForRegion(region, pdfX, pdfY, fontSize, targetFontPx) {
 }
 
 // The x-range of the region's labelled cells in the grid row that
-// contains `pdfY`. Used by transformForRegion's horizontal anchoring.
-// Returns { min, max, w, center } in PDF coords; null when the tap row
-// has no cells of this region (fall back to the bbox).
+// contains `pdfY`. Strictly per-row — never the bbox. Different rows
+// of an L-shaped region have different widths; this is the width of
+// the part the tap actually landed in. Returns null when the row has
+// no cells of this region (transformForRegion's caller falls back to
+// centring on the tap point in that case).
 function regionRowRange(region, pdfY) {
-  const fallback = region?.bbox && {
-    min: region.bbox.x,
-    max: region.bbox.x + region.bbox.w,
-    w: region.bbox.w,
-    center: region.bbox.x + region.bbox.w / 2,
-  };
-  if (!regionsData) return fallback;
+  if (!region || !regionsData) return null;
   const { labels, gridW, gridH, cellSize } = regionsData;
   const ty = Math.floor(pdfY / cellSize);
-  if (ty < 0 || ty >= gridH) return fallback;
+  if (ty < 0 || ty >= gridH) return null;
   let xMin = Infinity, xMax = -Infinity;
   const rowBase = ty * gridW;
   for (let x = 0; x < gridW; x++) {
@@ -1256,7 +1341,7 @@ function regionRowRange(region, pdfY) {
       if (px + cellSize > xMax) xMax = px + cellSize;
     }
   }
-  if (xMin === Infinity) return fallback;
+  if (xMin === Infinity) return null;
   return { min: xMin, max: xMax, w: xMax - xMin, center: (xMin + xMax) / 2 };
 }
 

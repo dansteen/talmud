@@ -36,6 +36,16 @@ export function getRegionZoomPx(fontSize) {
   return Number.isFinite(best) && best > 0 ? best : null;
 }
 
+// Read-only snapshot of every saved per-fontSize reading size. Used
+// by the debug panel's "zoom" tab.
+export function getAllRegionZooms() {
+  const map = loadRegionZoomMap();
+  return Object.entries(map)
+    .map(([k, v]) => ({ fontSize: parseFloat(k), px: v }))
+    .filter(e => Number.isFinite(e.fontSize) && Number.isFinite(e.px))
+    .sort((a, b) => b.fontSize - a.fontSize);
+}
+
 export function setRegionZoomPx(fontSize, px) {
   if (!Number.isFinite(fontSize) || fontSize <= 0) return;
   if (!Number.isFinite(px) || px <= 0) return;

@@ -126,6 +126,21 @@ export const view = {
   cssH: 0,
 };
 
+// Extra horizontal translate applied on top of view.x — used by the
+// two-finger page-turn swipe to slide the page under the finger before
+// committing to a page change. Independent of view so it doesn't leak
+// into the per-page persisted state.
+let swipeOffsetX = 0;
+
+export function setSwipeOffset(dx, animated = false) {
+  swipeOffsetX = dx;
+  applyTransform(animated);
+}
+
+export function getSwipeOffset() {
+  return swipeOffsetX;
+}
+
 // `regions` exposes the latest detection result for gestures.js / debug.
 // Null until the first page loads.
 export let regions = null;
@@ -216,7 +231,7 @@ function fitScale() {
 }
 
 function applyTransform(animated = false) {
-  const t = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+  const t = `translate(${view.x + swipeOffsetX}px, ${view.y}px) scale(${view.scale})`;
   canvas.classList.toggle('animating', animated);
   canvas.style.transform = t;
   if (overlay) {
@@ -412,6 +427,9 @@ export async function loadPage(url, savedViewState = null) {
     view.y = window.innerHeight / 2 - (textBbox.y + textBbox.h / 2) * renderScale;
   }
   constrainView();
+  // Clear any leftover swipe offset from a page-turn gesture so the new
+  // page renders centered, not at the slid-out position the gesture left.
+  swipeOffsetX = 0;
   applyTransform(false);
 }
 

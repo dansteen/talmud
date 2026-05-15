@@ -129,7 +129,7 @@ function determineInitial() {
 
 async function init() {
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(console.warn);
+    registerServiceWorker();
   }
 
   // Read the URL BEFORE initialising the drawer, since the drawer's first
@@ -185,3 +185,72 @@ async function init() {
 }
 
 init();
+
+// ── Service worker registration + update notification ──
+//
+// We register the SW, then poll for new versions on a 30-minute timer
+// when online, plus opportunistically when the tab regains focus. When
+// a new SW finishes installing (i.e. a deploy landed), we surface a
+// small "new version available" banner; tapping it tells the waiting
+// SW to take over and reloads the page so the user runs the new shell.
+
+async function registerServiceWorker() {
+  let registration;
+  try {
+    registration = await navigator.serviceWorker.register('/sw.js');
+  } catch (err) {
+    console.warn('SW registration failed', err);
+    return;
+  }
+
+  // If there's already a waiting worker on first load (the user closed
+  // the previous tab without applying an update), surface it now.
+  if (registration.waiting && navigator.serviceWorker.controller) {
+    showUpdateBanner(registration);
+  }
+
+  registration.addEventListener('updatefound', () => {
+    const fresh = registration.installing;
+    if (!fresh) return;
+    fresh.addEventListener('statechange', () => {
+      // 'installed' + an existing controller = there's an old SW still
+      // serving the page; the new one is ready to swap in on demand.
+      if (fresh.state === 'installed' && navigator.serviceWorker.controller) {
+        showUpdateBanner(registration);
+      }
+    });
+  });
+
+  // Background update checks. registration.update() goes to the network
+  // (bypassing http cache) and triggers 'updatefound' if sw.js changed.
+  const POLL_MS = 30 * 60 * 1000;
+  const safeUpdate = () => {
+    if (navigator.onLine !== false) registration.update().catch(() => {});
+  };
+  setInterval(safeUpdate, POLL_MS);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') safeUpdate();
+  });
+}
+
+function showUpdateBanner(registration) {
+  if (document.getElementById('update-banner')) return;
+  const banner = document.createElement('button');
+  banner.id = 'update-banner';
+  banner.type = 'button';
+  banner.textContent = 'New version — tap to reload';
+  banner.addEventListener('click', () => {
+    banner.disabled = true;
+    if (!registration.waiting) {
+      window.location.reload();
+      return;
+    }
+    // When the new SW activates, the controllerchange event fires; we
+    // reload then so the page picks up the fresh shell in one shot.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      window.location.reload();
+    }, { once: true });
+    registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+  });
+  document.body.appendChild(banner);
+}

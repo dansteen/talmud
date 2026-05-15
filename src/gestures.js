@@ -3,6 +3,7 @@ import {
   applyDelta, animateTo, scheduleQualityRender,
   transformForHome, transformForRegion,
   findRegionAtTap, effectiveScale, isFullyZoomedOut,
+  setSwipeOffset,
 } from './viewer.js';
 import { getRegionZoomPx, setRegionZoomPx } from './storage.js';
 
@@ -48,13 +49,27 @@ const doubleTap = { time: 0, x: 0, y: 0 };
 const DOUBLE_TAP_MS = 280;
 const DOUBLE_TAP_PX = 35;
 
-// Three-finger swipe (prev/next page)
-const SWIPE_TIME_MS = 600;
-const SWIPE_DISTANCE_PX = 60;
-
-// Two-finger pinch state
+// Two-finger gesture state
+//
+// One of two modes is committed shortly after the gesture starts:
+//   'pinch' — fingers spread/converge (∆dist crosses threshold first).
+//             The existing pinch+pan-while-zoomed behavior runs.
+//   'swipe' — fingers translate together horizontally (mid-X crosses
+//             threshold first). The page slides 1:1 with the midpoint;
+//             on release we commit a page turn if travel or velocity
+//             passes the thresholds below.
 let prevMidX = 0, prevMidY = 0, prevDist = 0;
+let twoFingerStartDist = 0;
+let twoFingerStartMidX = 0;
+let twoFingerMode = null;   // null | 'pinch' | 'swipe'
+let swipeSamples = [];      // [{t, x}] for release velocity
 let didPinch = false;
+
+const TWO_FINGER_PINCH_RATIO   = 0.10;  // |∆dist|/start > this → pinch
+const TWO_FINGER_SWIPE_PX      = 12;    // |∆midX| > this → swipe
+const SWIPE_COMMIT_FRACTION    = 0.20;  // |offset|/viewport-width to commit
+const SWIPE_FLICK_PX_PER_MS    = 0.6;   // release velocity to commit
+const SWIPE_VELOCITY_WINDOW_MS = 120;
 
 // Interaction state ────────────────────────────────────────────────
 //
@@ -127,6 +142,10 @@ function onTouchStart(e) {
     prevDist = s.dist;
     prevMidX = s.midX;
     prevMidY = s.midY;
+    twoFingerStartDist = s.dist;
+    twoFingerStartMidX = s.midX;
+    twoFingerMode = null;
+    swipeSamples = [{ t: performance.now(), x: s.midX }];
   }
 }
 
@@ -178,30 +197,61 @@ function onTouchMove(e) {
     return;
   }
 
-  // Two fingers: pinch only when zoomed. At home, ignore.
-  if (count === 2 && currentFontSize !== null) {
+  // Two fingers: decide between pinch and swipe-for-page-turn.
+  if (count === 2) {
     const s = twoTouchState();
-    const rawDScale = prevDist > 0 ? s.dist / prevDist : 1;
-    const dScale = 1 + (rawDScale - 1) * PINCH_SENSITIVITY;
-    const dx = s.midX - prevMidX;
-    const dy = s.midY - prevMidY;
-    applyDelta(dx, dy, dScale, s.midX, s.midY);
+    swipeSamples.push({ t: performance.now(), x: s.midX });
+    if (swipeSamples.length > 12) swipeSamples.shift();
+
+    if (twoFingerMode === null) {
+      const distChange = twoFingerStartDist > 0
+        ? Math.abs(s.dist - twoFingerStartDist) / twoFingerStartDist
+        : 0;
+      const midDx = s.midX - twoFingerStartMidX;
+      if (distChange > TWO_FINGER_PINCH_RATIO) {
+        twoFingerMode = 'pinch';
+      } else if (Math.abs(midDx) > TWO_FINGER_SWIPE_PX) {
+        twoFingerMode = 'swipe';
+      } else {
+        // Undecided yet — keep the prev refs current so the first
+        // committed move applies a clean delta, not a snap.
+        prevDist = s.dist;
+        prevMidX = s.midX;
+        prevMidY = s.midY;
+        return;
+      }
+    }
+
+    if (twoFingerMode === 'pinch') {
+      // Pinch + pan only when zoomed; at home it's still a no-op.
+      if (currentFontSize !== null) {
+        const rawDScale = prevDist > 0 ? s.dist / prevDist : 1;
+        const dScale = 1 + (rawDScale - 1) * PINCH_SENSITIVITY;
+        const dx = s.midX - prevMidX;
+        const dy = s.midY - prevMidY;
+        applyDelta(dx, dy, dScale, s.midX, s.midY);
+        didPinch = true;
+      }
+    } else {
+      // Swipe: page slides under the finger 1:1 with horizontal travel.
+      setSwipeOffset(s.midX - twoFingerStartMidX, false);
+    }
+
     prevDist = s.dist;
     prevMidX = s.midX;
     prevMidY = s.midY;
-    didPinch = true;
     return;
   }
-  // 3+ fingers: wait for release to detect a swipe.
+  // 3+ fingers: ignored (page turn lives on the 2-finger swipe now).
 }
 
 function onTouchEnd(e) {
   e.preventDefault();
   const countBefore = touches.size;
   const wasOneFinger = countBefore === 1;
-  const wasThreeFingers = countBefore >= 3;
+  const wasTwoFingerSwipe = countBefore === 2 && twoFingerMode === 'swipe';
 
-  if (wasThreeFingers) detectThreeFingerSwipe();
+  if (wasTwoFingerSwipe) finishTwoFingerSwipe();
 
   let liftedX = 0, liftedY = 0;
   for (const t of e.changedTouches) {
@@ -236,6 +286,10 @@ function onTouchEnd(e) {
     }
     scheduleQualityRender();
     prevDist = 0;
+    twoFingerMode = null;
+    twoFingerStartDist = 0;
+    twoFingerStartMidX = 0;
+    swipeSamples = [];
     gestureStartTime = 0;
   } else if (touches.size === 1) {
     prevDist = 0;
@@ -252,25 +306,46 @@ function onTouchEnd(e) {
   }
 }
 
-// Three-finger swipe — direction is taken from the sign of the
-// average horizontal delta. Diagonals count (vertical component
-// is ignored as long as the horizontal travel exceeds the threshold).
-function detectThreeFingerSwipe() {
-  const elapsed = Date.now() - gestureStartTime;
-  if (elapsed > SWIPE_TIME_MS) return;
-  let sumDx = 0, n = 0;
-  for (const [id, cur] of touches) {
-    const start = touchStarts.get(id);
-    if (!start) continue;
-    sumDx += cur.x - start.x;
-    n++;
+// Two-finger swipe commit — called on touchend when the gesture had
+// committed to swipe mode. We compare the final offset against the
+// commit fraction and the recent velocity against the flick threshold;
+// either one triggers a page turn. The page animates back to centered
+// either way (the new page will load over the old, then loadPage clears
+// swipeOffsetX as it renders).
+function finishTwoFingerSwipe() {
+  // The last sample's midpoint relative to gesture start is the offset
+  // the page has been visibly slid to.
+  const last = swipeSamples[swipeSamples.length - 1];
+  const finalDx = last ? last.x - twoFingerStartMidX : 0;
+  const vw = window.innerWidth || 1;
+  const fraction = Math.abs(finalDx) / vw;
+
+  // Trailing velocity within the last VELOCITY_WINDOW_MS.
+  const now = performance.now();
+  const recent = swipeSamples.filter(s => now - s.t <= SWIPE_VELOCITY_WINDOW_MS);
+  let velocity = 0;
+  if (recent.length >= 2) {
+    const a = recent[0], b = recent[recent.length - 1];
+    const dt = b.t - a.t;
+    if (dt > 0) velocity = (b.x - a.x) / dt;
   }
-  if (n < 3) return;
-  const dx = sumDx / n;
-  if (Math.abs(dx) < SWIPE_DISTANCE_PX) return;
-  // RTL convention: swiping right = previous, left = next.
-  if (dx > 0) onPrev?.();
-  else onNext?.();
+  const flicked = Math.abs(velocity) >= SWIPE_FLICK_PX_PER_MS;
+  const sameDirection = Math.sign(velocity) === Math.sign(finalDx);
+  const shouldCommit = fraction > SWIPE_COMMIT_FRACTION || (flicked && sameDirection);
+
+  if (shouldCommit) {
+    // RTL: rightward swipe → previous; leftward → next.
+    if (finalDx > 0) onPrev?.();
+    else onNext?.();
+    // The new page's loadPage clears swipeOffsetX before its
+    // applyTransform, so the new content lands centered. In the brief
+    // window before that, ease the current page back so the old image
+    // doesn't visibly hang at the slid position.
+    setSwipeOffset(0, true);
+  } else {
+    // Cancel: ease the page back to centered.
+    setSwipeOffset(0, true);
+  }
 }
 
 function handleTap(clientX, clientY) {

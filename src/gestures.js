@@ -32,6 +32,17 @@ const MOVE_THRESHOLD = 8;
 
 // Single-finger drag state — incremental pan when zoomed.
 let prevSingleX = 0, prevSingleY = 0;
+// Per-gesture direction lock for single-finger pan. Set on the first
+// move that crosses PAN_DECISION_PX from the touch's start position:
+//   'v'    → only vertical movement passes (kills horizontal jitter
+//            during vertical reading scrolls)
+//   'h'    → only horizontal movement passes
+//   'free' → both axes pass (diagonal intent)
+// Reset to null on every touchstart.
+let panDirection = null;
+let panStartX = 0, panStartY = 0;
+const PAN_DECISION_PX = 12;   // distance from start before we decide
+const PAN_LOCK_RATIO = 2;     // one axis must exceed the other by this
 
 // Double-tap detection
 const doubleTap = { time: 0, x: 0, y: 0 };
@@ -108,6 +119,9 @@ function onTouchStart(e) {
     const t = touches.values().next().value;
     prevSingleX = t.x;
     prevSingleY = t.y;
+    panStartX = t.x;
+    panStartY = t.y;
+    panDirection = null;
   }
   if (touches.size === 2) {
     const s = twoTouchState();
@@ -134,8 +148,37 @@ function onTouchMove(e) {
   if (count === 1) {
     if (currentFontSize !== null) {
       const t = touches.values().next().value;
-      const dx = t.x - prevSingleX;
-      const dy = t.y - prevSingleY;
+
+      // Decide a direction lock the first time the finger has moved
+      // PAN_DECISION_PX from where it touched down. The lock kills
+      // small horizontal jitter while reading vertically (and vice
+      // versa). A diagonal-intent gesture (neither axis dominates by
+      // PAN_LOCK_RATIO) goes "free" and pans on both axes.
+      if (panDirection === null) {
+        const totalDx = t.x - panStartX;
+        const totalDy = t.y - panStartY;
+        if (totalDx * totalDx + totalDy * totalDy >= PAN_DECISION_PX * PAN_DECISION_PX) {
+          const adx = Math.abs(totalDx);
+          const ady = Math.abs(totalDy);
+          if (ady > PAN_LOCK_RATIO * adx)      panDirection = 'v';
+          else if (adx > PAN_LOCK_RATIO * ady) panDirection = 'h';
+          else                                 panDirection = 'free';
+          // Flush the accumulated delta from the dead-zone period in
+          // the chosen direction, then continue incrementally below.
+          let dx = totalDx, dy = totalDy;
+          if (panDirection === 'v') dx = 0;
+          else if (panDirection === 'h') dy = 0;
+          if (dx !== 0 || dy !== 0) applyDelta(dx, dy, 1, 0, 0);
+          prevSingleX = t.x;
+          prevSingleY = t.y;
+        }
+        return;
+      }
+
+      let dx = t.x - prevSingleX;
+      let dy = t.y - prevSingleY;
+      if (panDirection === 'v') dx = 0;
+      else if (panDirection === 'h') dy = 0;
       if (dx !== 0 || dy !== 0) applyDelta(dx, dy, 1, 0, 0);
       prevSingleX = t.x;
       prevSingleY = t.y;
@@ -205,10 +248,15 @@ function onTouchEnd(e) {
   } else if (touches.size === 1) {
     prevDist = 0;
     // Anchor incremental pan on the remaining finger so the next
-    // move doesn't compute a delta from a stale position.
+    // move doesn't compute a delta from a stale position, and reset
+    // the direction lock — the remaining finger starts a fresh
+    // single-finger gesture.
     const t = touches.values().next().value;
     prevSingleX = t.x;
     prevSingleY = t.y;
+    panStartX = t.x;
+    panStartY = t.y;
+    panDirection = null;
   }
 }
 

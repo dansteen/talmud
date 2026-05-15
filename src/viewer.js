@@ -1296,20 +1296,21 @@ const ALWAYS_TOP_PX = 10;
 // Compute a target view transform that, in order of preference:
 //
 //   horizontal axis (priority LEFT for context overflow):
-//     P1: if region.bbox.w fits the effective viewport at the new
-//         scale, use the full bbox extent
-//     P2: else if row.w (per-row extent at the tap's y) fits, use
-//         that
-//     P3: else (the chosen extent is wider than the effective
-//         viewport) — if tap → row.max still fits, pin row's right
-//         edge to the effective viewport's right edge; otherwise
-//         centre on the tap.
+//     P1: if the local contiguous extent around the tap (walked left
+//         and right until a gutter / region boundary) fits the
+//         effective viewport at the new scale, use it. For a region
+//         with no internal vertical gutter this equals the bbox
+//         width; with one, the walk stops at the gutter so only the
+//         side the user tapped is framed.
+//     P2: else (chosen extent is wider than the effective viewport)
+//         — if tap → row.max still fits, pin the row's right edge to
+//         the effective viewport's right edge; otherwise centre on
+//         the tap.
 //
 //   vertical axis (priority BOTTOM):
-//     P1: if region.bbox.h fits, use the full bbox extent
-//     P2: else if col.h (per-column extent at the tap's x) fits, use
-//         that
-//     P3: else (nothing fits vertically) — centre on the tap.
+//     P1: if the local contiguous vertical extent (walked up and
+//         down until a gutter) fits, use it.
+//     P2: else centre on the tap.
 //
 // "Effective viewport" excludes a fixed `ALWAYS_RIGHT_PX` strip on
 // the right and `ALWAYS_TOP_PX` strip on the top — those strips are
@@ -1341,8 +1342,12 @@ export function transformForRegion(region, pdfX, pdfY, fontSize, targetFontPx) {
   const W_eff = W - ALWAYS_RIGHT_PX;   // usable horizontal range: [0, W_eff]
   const H_eff = H - ALWAYS_TOP_PX;     // usable vertical range:   [ALWAYS_TOP_PX, H]
   const CTX = CONTEXT_MIN_PX;
-  const row = regionRowRange(region, pdfY);
-  const col = regionColRange(region, pdfX);
+  // Local contiguous extents at the tap. Equivalent to the whole
+  // bbox when the region has no internal gutters; correctly bounded
+  // by the gutter when it does (so a tap on one side of an H-shape's
+  // central gutter only frames that side).
+  const row = regionRowRange(region, pdfY, pdfX);
+  const col = regionColRange(region, pdfX, pdfY);
 
   // Horizontal anchor — priority LEFT. The effective viewport runs
   // [0, W_eff]; the reserved strip is at [W_eff, W].
@@ -1364,22 +1369,18 @@ export function transformForRegion(region, pdfX, pdfY, fontSize, targetFontPx) {
     return ALWAYS_TOP_PX + H_eff / 2 - center * s;
   };
 
-  // Pick the widest extent that still fits within the effective
-  // viewport horizontally.
+  // Pick the widest local extent that still fits horizontally. The
+  // local extent already represents the full region width when there
+  // are no internal gutters (the walk runs to the bbox edges), so no
+  // separate "bbox" priority is needed — and a vertical gutter inside
+  // the bbox is now respected automatically.
   let hMin, hMax;
-  if (region.bbox.w * s <= W_eff) {
-    hMin = region.bbox.x;
-    hMax = region.bbox.x + region.bbox.w;
-  } else if (row && row.w * s <= W_eff) {
+  if (row && row.w * s <= W_eff) {
     hMin = row.min;
     hMax = row.max;
   }
-  // Pick the tallest extent that still fits vertically.
   let vMin, vMax;
-  if (region.bbox.h * s <= H_eff) {
-    vMin = region.bbox.y;
-    vMax = region.bbox.y + region.bbox.h;
-  } else if (col && col.h * s <= H_eff) {
+  if (col && col.h * s <= H_eff) {
     vMin = col.min;
     vMax = col.max;
   }
@@ -1403,50 +1404,50 @@ export function transformForRegion(region, pdfX, pdfY, fontSize, targetFontPx) {
   return { x: xView, y: yView, scale: visualScale };
 }
 
-// The y-range of the region's labelled cells in the grid column that
-// contains `pdfX`. Vertical analogue of regionRowRange — for an
-// L-shaped region the vertical extent at the tap x can differ from
-// the bbox height. Returns null when the column has no cells of this
-// region.
-function regionColRange(region, pdfX) {
+// Walk from the tap cell up and down through cells labelled with this
+// region. Stops at the first non-region cell (gutter or another
+// region) in each direction. This gives the *contiguous* vertical
+// extent around the tap, not the full region scan — so a horizontal
+// gutter slicing through the bbox correctly bounds the result.
+// Returns null when the tap cell isn't this region (e.g. tap on a
+// gutter; caller falls back to centring on tap).
+function regionColRange(region, pdfX, pdfY) {
   if (!region || !regionsData) return null;
   const { labels, gridW, gridH, cellSize } = regionsData;
   const tx = Math.floor(pdfX / cellSize);
-  if (tx < 0 || tx >= gridW) return null;
-  let yMin = Infinity, yMax = -Infinity;
-  for (let y = 0; y < gridH; y++) {
-    if (labels[y * gridW + tx] === region.id) {
-      const py = y * cellSize;
-      if (py < yMin) yMin = py;
-      if (py + cellSize > yMax) yMax = py + cellSize;
-    }
-  }
-  if (yMin === Infinity) return null;
-  return { min: yMin, max: yMax, h: yMax - yMin, center: (yMin + yMax) / 2 };
+  const ty = Math.floor(pdfY / cellSize);
+  if (tx < 0 || tx >= gridW || ty < 0 || ty >= gridH) return null;
+  if (labels[ty * gridW + tx] !== region.id) return null;
+  let yMin = ty;
+  while (yMin > 0 && labels[(yMin - 1) * gridW + tx] === region.id) yMin--;
+  let yMax = ty;
+  while (yMax < gridH - 1 && labels[(yMax + 1) * gridW + tx] === region.id) yMax++;
+  const min = yMin * cellSize;
+  const max = (yMax + 1) * cellSize;
+  return { min, max, h: max - min, center: (min + max) / 2 };
 }
 
-// The x-range of the region's labelled cells in the grid row that
-// contains `pdfY`. Strictly per-row — never the bbox. Different rows
-// of an L-shaped region have different widths; this is the width of
-// the part the tap actually landed in. Returns null when the row has
-// no cells of this region (transformForRegion's caller falls back to
-// centring on the tap point in that case).
-function regionRowRange(region, pdfY) {
+// Walk from the tap cell left and right through cells labelled with
+// this region. Stops at the first non-region cell in each direction.
+// This gives the *contiguous* horizontal extent around the tap — so a
+// vertical gutter inside the region's bbox correctly bounds the
+// result (the user only sees the side they tapped). Returns null
+// when the tap cell isn't this region.
+function regionRowRange(region, pdfY, pdfX) {
   if (!region || !regionsData) return null;
   const { labels, gridW, gridH, cellSize } = regionsData;
+  const tx = Math.floor(pdfX / cellSize);
   const ty = Math.floor(pdfY / cellSize);
-  if (ty < 0 || ty >= gridH) return null;
-  let xMin = Infinity, xMax = -Infinity;
+  if (tx < 0 || tx >= gridW || ty < 0 || ty >= gridH) return null;
   const rowBase = ty * gridW;
-  for (let x = 0; x < gridW; x++) {
-    if (labels[rowBase + x] === region.id) {
-      const px = x * cellSize;
-      if (px < xMin) xMin = px;
-      if (px + cellSize > xMax) xMax = px + cellSize;
-    }
-  }
-  if (xMin === Infinity) return null;
-  return { min: xMin, max: xMax, w: xMax - xMin, center: (xMin + xMax) / 2 };
+  if (labels[rowBase + tx] !== region.id) return null;
+  let xMin = tx;
+  while (xMin > 0 && labels[rowBase + xMin - 1] === region.id) xMin--;
+  let xMax = tx;
+  while (xMax < gridW - 1 && labels[rowBase + xMax + 1] === region.id) xMax++;
+  const min = xMin * cellSize;
+  const max = (xMax + 1) * cellSize;
+  return { min, max, w: max - min, center: (min + max) / 2 };
 }
 
 // True when the view is at (or very close to) the fit-the-page home

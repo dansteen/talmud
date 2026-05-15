@@ -33,16 +33,15 @@ const MOVE_THRESHOLD = 8;
 // Single-finger drag state — incremental pan when zoomed.
 let prevSingleX = 0, prevSingleY = 0;
 // Per-gesture direction lock for single-finger pan. Set on the first
-// move that crosses PAN_DECISION_PX from the touch's start position:
-//   'v'    → only vertical movement passes (kills horizontal jitter
-//            during vertical reading scrolls)
-//   'h'    → only horizontal movement passes
-//   'free' → both axes pass (diagonal intent)
-// Reset to null on every touchstart.
+// move that crosses PAN_DECISION_PX from the touch's start position to
+// whichever axis has the larger accumulated displacement at that moment:
+//   'v' → only vertical movement passes
+//   'h' → only horizontal movement passes
+// Diagonals are forced onto the dominant axis — to pan both, lift and
+// drag again. Reset to null on every touchstart.
 let panDirection = null;
 let panStartX = 0, panStartY = 0;
 const PAN_DECISION_PX = 12;   // distance from start before we decide
-const PAN_LOCK_RATIO = 2;     // one axis must exceed the other by this
 
 // Double-tap detection
 const doubleTap = { time: 0, x: 0, y: 0 };
@@ -150,24 +149,19 @@ function onTouchMove(e) {
       const t = touches.values().next().value;
 
       // Decide a direction lock the first time the finger has moved
-      // PAN_DECISION_PX from where it touched down. The lock kills
-      // small horizontal jitter while reading vertically (and vice
-      // versa). A diagonal-intent gesture (neither axis dominates by
-      // PAN_LOCK_RATIO) goes "free" and pans on both axes.
+      // PAN_DECISION_PX from where it touched down. Pick whichever
+      // axis has the larger accumulated displacement at that moment;
+      // even a near-diagonal start gets snapped to one axis. To pan
+      // both axes, lift and drag again.
       if (panDirection === null) {
         const totalDx = t.x - panStartX;
         const totalDy = t.y - panStartY;
         if (totalDx * totalDx + totalDy * totalDy >= PAN_DECISION_PX * PAN_DECISION_PX) {
-          const adx = Math.abs(totalDx);
-          const ady = Math.abs(totalDy);
-          if (ady > PAN_LOCK_RATIO * adx)      panDirection = 'v';
-          else if (adx > PAN_LOCK_RATIO * ady) panDirection = 'h';
-          else                                 panDirection = 'free';
+          panDirection = Math.abs(totalDy) > Math.abs(totalDx) ? 'v' : 'h';
           // Flush the accumulated delta from the dead-zone period in
           // the chosen direction, then continue incrementally below.
-          let dx = totalDx, dy = totalDy;
-          if (panDirection === 'v') dx = 0;
-          else if (panDirection === 'h') dy = 0;
+          const dx = panDirection === 'h' ? totalDx : 0;
+          const dy = panDirection === 'v' ? totalDy : 0;
           if (dx !== 0 || dy !== 0) applyDelta(dx, dy, 1, 0, 0);
           prevSingleX = t.x;
           prevSingleY = t.y;
@@ -175,10 +169,8 @@ function onTouchMove(e) {
         return;
       }
 
-      let dx = t.x - prevSingleX;
-      let dy = t.y - prevSingleY;
-      if (panDirection === 'v') dx = 0;
-      else if (panDirection === 'h') dy = 0;
+      let dx = panDirection === 'h' ? t.x - prevSingleX : 0;
+      let dy = panDirection === 'v' ? t.y - prevSingleY : 0;
       if (dx !== 0 || dy !== 0) applyDelta(dx, dy, 1, 0, 0);
       prevSingleX = t.x;
       prevSingleY = t.y;

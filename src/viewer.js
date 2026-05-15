@@ -1290,77 +1290,99 @@ const CONTEXT_MIN_PX = 40;
 // being flush with the screen edge.
 const CONTEXT_EDGE_PAD = 8;
 
-// Compute a target view transform that:
-//   • horizontally and vertically positions the tapped region so a
-//     "context margin" (≥ CONTEXT_MIN_PX) shows on the opposite side
-//     of the gutter when there's room — i.e. you see a bit of the
-//     adjacent column. If only one side has room, priority goes to:
-//       — LEFT (horizontal), so RTL line starts are visible,
-//       — BOTTOM (vertical), so the next line(s) are visible.
-//   • when the region fills the viewport in a direction, falls back
-//     to: row exceeds → pin row's right edge to viewport right; col
-//     exceeds → centre on the tap.
-//   • scales so a glyph of `fontSize` displays at `targetFontPx`
-//     screen pixels.
-// animateTo() runs the result through constrainView() afterwards,
-// which will clamp the view to the text bbox — for edge regions that
-// reach the textBbox boundary, the constraint naturally flips the
-// context to whichever side actually has content.
+// Compute a target view transform that, in order of preference:
+//
+//   horizontal axis (priority LEFT for context overflow):
+//     P1: if region.bbox.w fits the viewport at the new scale, use
+//         the full bbox extent
+//     P2: else if row.w (per-row extent at the tap's y) fits, use
+//         that
+//     P3: else (the chosen extent is wider than viewport) — if
+//         tap → row.max still fits, pin row's right edge to the
+//         viewport's right edge; otherwise centre on the tap.
+//
+//   vertical axis (priority BOTTOM):
+//     P1: if region.bbox.h fits, use the full bbox extent
+//     P2: else if col.h (per-column extent at the tap's x) fits, use
+//         that
+//     P3: else (nothing fits vertically) — centre on the tap.
+//
+// Whichever extent is picked, the in-axis positioning applies the
+// previously-defined left/bottom-priority context rule:
+//   - slack ≥ 2*CTX_MIN → centre the extent in the viewport,
+//   - slack ≥ CTX_MIN   → pin the priority-opposite edge near the
+//                         viewport edge (LEFT: pin right edge; BOTTOM:
+//                         pin top edge), so all remaining slack lands
+//                         on the priority side,
+//   - slack <  CTX_MIN  → centre (region nearly fills, no real
+//                         context room).
+//
+// scales so a glyph of `fontSize` displays at `targetFontPx` screen
+// pixels. animateTo() runs the result through constrainView()
+// afterwards, which clamps to the text bbox — for edge regions, the
+// constraint naturally flips the context to whichever side has
+// content within textBbox.
 export function transformForRegion(region, pdfX, pdfY, fontSize, targetFontPx) {
   if (!region || !(fontSize > 0) || !(targetFontPx > 0)) return null;
-  const desiredEff = targetFontPx / fontSize;       // PDF → screen
-  const visualScale = desiredEff / renderScale;
+  const s = targetFontPx / fontSize;                // PDF → screen
+  const visualScale = s / renderScale;
   const W = window.innerWidth;
   const H = window.innerHeight;
-  const row = regionRowRange(region, pdfY);
-  const col = regionColRange(region, pdfX);
   const CTX = CONTEXT_MIN_PX;
   const PAD = CONTEXT_EDGE_PAD;
+  const row = regionRowRange(region, pdfY);
+  const col = regionColRange(region, pdfX);
 
-  // ── Horizontal ──
-  let xView;
-  if (!row) {
-    xView = W / 2 - pdfX * desiredEff;
-  } else {
-    const remainder = W - row.w * desiredEff;
-    if (remainder >= 2 * CTX) {
-      // Comfortable fit — centre, context on both sides.
-      xView = W / 2 - row.center * desiredEff;
-    } else if (remainder >= CTX) {
-      // Tight fit — only one side has room for context. Priority LEFT:
-      // pin row's right edge near the viewport's right edge so all the
-      // remainder space lands on the left.
-      xView = W - PAD - row.max * desiredEff;
-    } else if (remainder >= 0) {
-      // Region nearly fills horizontally — centre, no context emphasis.
-      xView = W / 2 - row.center * desiredEff;
-    } else if ((row.max - pdfX) * desiredEff <= W) {
-      // Row exceeds viewport but tap → right edge fits. Pin row's
-      // right edge to the viewport's right edge (no pad: region fills
-      // the page horizontally — the "exception" case).
-      xView = W - row.max * desiredEff;
-    } else {
-      xView = W / 2 - pdfX * desiredEff;
+  // Apply the slack rule to one axis. `pinHigh = true` pins the max
+  // end near the viewport's far edge (LEFT priority horizontally);
+  // `pinHigh = false` pins the min end near 0 (BOTTOM priority
+  // vertically — pinning column top to viewport top exposes context
+  // below the region).
+  const anchor = (min, max, viewportSize, pinHigh) => {
+    const slack = viewportSize - (max - min) * s;
+    const center = (min + max) / 2;
+    if (slack >= 2 * CTX) return viewportSize / 2 - center * s;
+    if (slack >= CTX) {
+      return pinHigh
+        ? viewportSize - PAD - max * s
+        : PAD - min * s;
     }
+    return viewportSize / 2 - center * s;
+  };
+
+  // Pick the widest extent that still fits horizontally.
+  let hMin, hMax;
+  if (region.bbox.w * s <= W) {
+    hMin = region.bbox.x;
+    hMax = region.bbox.x + region.bbox.w;
+  } else if (row && row.w * s <= W) {
+    hMin = row.min;
+    hMax = row.max;
+  }
+  // Pick the tallest extent that still fits vertically.
+  let vMin, vMax;
+  if (region.bbox.h * s <= H) {
+    vMin = region.bbox.y;
+    vMax = region.bbox.y + region.bbox.h;
+  } else if (col && col.h * s <= H) {
+    vMin = col.min;
+    vMax = col.max;
   }
 
-  // ── Vertical ──
-  let yView;
-  if (!col) {
-    yView = H / 2 - pdfY * desiredEff;
+  let xView;
+  if (hMin !== undefined) {
+    xView = anchor(hMin, hMax, W, true);
+  } else if (row && (row.max - pdfX) * s <= W) {
+    xView = W - row.max * s;          // pin row right edge
   } else {
-    const remainder = H - col.h * desiredEff;
-    if (remainder >= 2 * CTX) {
-      yView = H / 2 - col.center * desiredEff;
-    } else if (remainder >= CTX) {
-      // Priority BOTTOM: pin column's top edge near viewport top.
-      yView = PAD - col.min * desiredEff;
-    } else if (remainder >= 0) {
-      yView = H / 2 - col.center * desiredEff;
-    } else {
-      // Column taller than viewport — centre on tap.
-      yView = H / 2 - pdfY * desiredEff;
-    }
+    xView = W / 2 - pdfX * s;         // centre on tap
+  }
+
+  let yView;
+  if (vMin !== undefined) {
+    yView = anchor(vMin, vMax, H, false);
+  } else {
+    yView = H / 2 - pdfY * s;
   }
 
   return { x: xView, y: yView, scale: visualScale };

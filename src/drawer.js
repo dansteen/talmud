@@ -261,27 +261,35 @@ function restoreScrollForView(view) {
   });
 }
 
-// ── Peek: mostly-vertical swipe up opens the drawer ──
+// ── Peek: pull the drawer up with the finger ──
 //
-// No tap activation and no horizontal-swipe activation — the only way
-// to raise the drawer from the peek zone is a deliberate upward drag
-// where vertical travel dominates horizontal travel.
+// No tap activation and no horizontal-swipe activation. The drawer
+// follows the finger upward; on release we commit (open fully) if the
+// drag crossed a fraction of the drawer height or if the release had
+// enough upward velocity (a flick). Otherwise the drawer sinks back
+// to closed.
 
 function bindPeek() {
   let startX = null;
   let startY = null;
-  let dragging = false; // crossed the ACTIVATION_PX threshold while vertical
-  let abandoned = false; // gesture started horizontally; ignore for the rest
+  let dragging = false;   // drawer is currently following the finger
+  let abandoned = false;  // gesture started horizontally; ignore for the rest
+  let drawerH = 0;        // drawer height captured at the moment of activation
+  let samples = [];       // recent {t, y} for velocity at release
 
-  const ACTIVATION_PX = 28;          // upward travel required to commit
-  const VERTICAL_DOMINANCE_RATIO = 1.5; // |dy| must exceed this × |dx|
+  const ACTIVATION_PX = 8;             // upward travel before the drawer engages
+  const VERTICAL_DOMINANCE_RATIO = 1.5;
+  const COMMIT_FRACTION = 0.4;         // pulled at least this fraction of H → open
+  const FLICK_VELOCITY = 0.6;          // px/ms upward → open regardless of distance
+  const VELOCITY_WINDOW_MS = 120;
 
-  const releasePeek = () => {
+  const resetGestureState = () => {
     startX = null;
     startY = null;
     dragging = false;
     abandoned = false;
-    peekEl.classList.remove('dragging');
+    drawerH = 0;
+    samples = [];
   };
 
   peekEl.addEventListener('pointerdown', e => {
@@ -290,9 +298,7 @@ function bindPeek() {
     startY = e.clientY;
     dragging = false;
     abandoned = false;
-    // Real touch pointers capture cleanly; synthetic events may throw
-    // NotFoundError if the pointerId isn't active. Either way, we want
-    // startY set above so the move handler can run.
+    samples = [{ t: performance.now(), y: e.clientY }];
     try { peekEl.setPointerCapture(e.pointerId); } catch { /* ignore */ }
   });
 
@@ -303,29 +309,107 @@ function bindPeek() {
     const adx = Math.abs(dx);
     const ady = Math.abs(dy);
 
-    // Only show the dragging affordance once intent is clearly upward.
-    if (!dragging && dy < -6 && ady > VERTICAL_DOMINANCE_RATIO * adx) {
-      dragging = true;
-      peekEl.classList.add('dragging');
+    samples.push({ t: performance.now(), y: e.clientY });
+    if (samples.length > 12) samples.shift();
+
+    if (!dragging) {
+      // A clearly-horizontal early move kills the gesture before activation.
+      if (adx > 6 && adx > ady) {
+        abandoned = true;
+        return;
+      }
+      if (dy < -ACTIVATION_PX && ady > VERTICAL_DOMINANCE_RATIO * adx) {
+        dragging = true;
+        beginPull();
+      } else {
+        return;
+      }
     }
 
-    // A clearly-horizontal early move kills the gesture — the user isn't
-    // trying to raise the drawer.
-    if (!dragging && adx > 6 && adx > ady) {
-      abandoned = true;
-      peekEl.classList.remove('dragging');
+    // Drawer follows the finger upward, clamped to its own height.
+    const liftedBy = Math.max(0, Math.min(drawerH, -dy));
+    drawerEl.style.transform = `translateY(${drawerH - liftedBy}px)`;
+    scrimEl.style.opacity = (liftedBy / drawerH).toFixed(3);
+  });
+
+  function beginPull() {
+    // Choose view, prep DOM, and restore scroll so it's correct by the time
+    // the drawer is up. The .dragging class kills the CSS transition so
+    // the drawer tracks the finger 1:1 instead of animating after each move.
+    const view = getState().open.length === 0 ? VIEW_PICKER : VIEW_SLIDERS;
+    currentView = view;
+    showView();
+    drawerEl.classList.remove('hidden');
+    scrimEl.classList.remove('hidden');
+    drawerEl.classList.add('dragging');
+    drawerH = drawerEl.offsetHeight || window.innerHeight * 0.55;
+    drawerEl.style.transform = `translateY(${drawerH}px)`;
+    scrimEl.style.opacity = '0';
+    restoreScrollForView(currentView);
+  }
+
+  function release(e) {
+    if (!dragging) {
+      resetGestureState();
       return;
     }
 
-    if (dragging && dy < -ACTIVATION_PX) {
-      // Pulled up far enough — commit
-      releasePeek();
-      open(VIEW_SLIDERS);
-    }
-  });
+    const dy = (e?.clientY ?? startY) - startY;
+    const liftedBy = Math.max(0, Math.min(drawerH, -dy));
+    const fraction = drawerH > 0 ? liftedBy / drawerH : 0;
 
-  peekEl.addEventListener('pointerup', releasePeek);
-  peekEl.addEventListener('pointercancel', releasePeek);
+    // Velocity from samples within the trailing window.
+    const now = performance.now();
+    let velocity = 0;
+    const recent = samples.filter(s => now - s.t <= VELOCITY_WINDOW_MS);
+    if (recent.length >= 2) {
+      const first = recent[0], last = recent[recent.length - 1];
+      const dt = last.t - first.t;
+      if (dt > 0) velocity = (last.y - first.y) / dt;
+    }
+    const flickedUp = velocity < -FLICK_VELOCITY;
+
+    if (flickedUp || fraction > COMMIT_FRACTION) {
+      commitOpen();
+    } else {
+      abortPull();
+    }
+    resetGestureState();
+  }
+
+  function commitOpen() {
+    // Re-enable the transition and let CSS animate from the current
+    // inline translateY to translateY(0) (.open). Clearing the inline
+    // transform in the same tick as adding .open avoids a snap back to
+    // closed before the open transition runs.
+    drawerEl.classList.remove('dragging');
+    drawerEl.style.transform = '';
+    drawerEl.classList.add('open');
+    scrimEl.style.opacity = '';
+    scrimEl.classList.add('visible');
+    isOpen = true;
+  }
+
+  function abortPull() {
+    // Animate back to closed, then hide once the transition has settled.
+    drawerEl.classList.remove('dragging');
+    drawerEl.style.transform = '';
+    scrimEl.style.opacity = '';
+    scrimEl.classList.remove('visible');
+    isOpen = false;
+    setTimeout(() => {
+      if (!isOpen) {
+        drawerEl.classList.add('hidden');
+        scrimEl.classList.add('hidden');
+      }
+    }, 280);
+  }
+
+  peekEl.addEventListener('pointerup', release);
+  peekEl.addEventListener('pointercancel', e => {
+    if (dragging) abortPull();
+    resetGestureState();
+  });
 }
 
 // ── Drawer body: grip drag-down to close, scrim tap to close ──

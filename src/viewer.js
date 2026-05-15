@@ -7,7 +7,7 @@ import {
   detectGutters,
   detectRegions as detectPixelRegions,
 } from './regionsPixel.js';
-import { getAllRegionZooms } from './storage.js';
+import { getAllRegionZooms, getDebugEnabled } from './storage.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -15,16 +15,25 @@ const canvas = document.getElementById('page-canvas');
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 const overlay = document.getElementById('region-overlay');
 
-// Region overlay is shown when ?debug=1 is in the URL or after pressing 'd'.
+// Region overlay is shown when ?debug=1 is in the URL, after pressing 'd',
+// or when the persisted "Show debug overlay" Settings toggle is on.
+// The URL flag additionally brings up the heavy tuning panel.
 const DEBUG_REGIONS = new URLSearchParams(location.search).has('debug');
-if (DEBUG_REGIONS) {
+if (DEBUG_REGIONS || getDebugEnabled()) {
   overlay.classList.add('visible');
+}
+if (DEBUG_REGIONS) {
   // Defer panel creation so the DOM is ready and module state is set up.
   queueMicrotask(createRegionDebugPanel);
 }
 window.addEventListener('keydown', e => {
   if (e.key === 'd' || e.key === 'D') overlay.classList.toggle('visible');
 });
+
+// Imperative toggle for the Settings drawer's debug switch.
+export function setDebugVisible(visible) {
+  overlay.classList.toggle('visible', visible);
+}
 
 // Read ?cellSize=&closeRadius=&minRegionFrac= so the detection knobs can be
 // tuned in the URL while we dial them in.

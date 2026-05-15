@@ -6,10 +6,12 @@ import {
   amudToIndex, indexToAmud, lastAmudIndex, dafLabel,
 } from './tractates.js';
 import {
-  getState, subscribe, openMasechta, switchTo, closeMasechta,
+  getState, subscribe, addMasechta, switchTo, closeMasechta,
   navigateTo, marksForMasechta, currentPosition,
 } from './session.js';
 import { t, LOCALES, getLocale, setLocale, onLocaleChange } from './i18n.js';
+import { getDebugEnabled, setDebugEnabled } from './storage.js';
+import { setDebugVisible } from './viewer.js';
 
 let onNavigate = null; // (slug, daf, amud) — called when user picks a new page
 let onShowWelcome = null; // () — called when no masechta is open
@@ -17,9 +19,10 @@ let onHideWelcome = null;
 
 // ── DOM refs (resolved in init) ──
 let peekEl, peekHandleEl, drawerEl, scrimEl;
-let slidersViewEl, pickerViewEl;
-let sliderStackEl, addBtn;
+let slidersViewEl, pickerViewEl, settingsViewEl;
+let sliderStackEl, addBtn, settingsBtn;
 let pickerListEl, pickerBackBtn;
+let settingsBackBtn, settingsDebugToggle;
 let welcomeEl, welcomeOpenBtn;
 
 export function initDrawer({ navigate, showWelcome, hideWelcome }) {
@@ -33,16 +36,21 @@ export function initDrawer({ navigate, showWelcome, hideWelcome }) {
   scrimEl = document.getElementById('drawer-scrim');
   slidersViewEl = document.getElementById('sliders-view');
   pickerViewEl = document.getElementById('picker-view');
+  settingsViewEl = document.getElementById('settings-view');
   sliderStackEl = document.getElementById('slider-stack');
   addBtn = document.getElementById('add-masechta-btn');
+  settingsBtn = document.getElementById('settings-btn');
   pickerListEl = document.getElementById('picker-list');
   pickerBackBtn = document.getElementById('picker-back-btn');
+  settingsBackBtn = document.getElementById('settings-back-btn');
+  settingsDebugToggle = document.getElementById('settings-debug-toggle');
   welcomeEl = document.getElementById('welcome');
   welcomeOpenBtn = document.getElementById('welcome-open-btn');
 
   bindPeek();
   bindDrawer();
   bindPicker();
+  bindSettings();
   bindWelcome();
   buildLangPickers();
   buildPickerList();
@@ -80,48 +88,119 @@ function applyStaticI18n() {
   }
 }
 
-// ── Language pickers (welcome + drawer) ──
+// ── Language dropdowns (welcome + drawer) ──
+//
+// Each dropdown is a host element containing:
+//   - a toggle button showing the current flag + name
+//   - a menu of <button data-code="..."> options, hidden by default
+// Tapping the toggle opens the menu; tapping outside closes it.
+// "Open upward" so the menu doesn't get cut off by the drawer/screen edge.
 
 function buildLangPickers() {
   for (const id of ['welcome-lang', 'drawer-lang']) {
     const host = document.getElementById(id);
     if (!host) continue;
     host.innerHTML = '';
+
+    const toggle = document.createElement('button');
+    toggle.className = 'lang-dropdown-toggle';
+    toggle.type = 'button';
+    toggle.setAttribute('aria-haspopup', 'listbox');
+    toggle.setAttribute('aria-expanded', 'false');
+
+    const menu = document.createElement('div');
+    menu.className = 'lang-dropdown-menu hidden';
+    menu.setAttribute('role', 'listbox');
     for (const loc of LOCALES) {
-      const btn = document.createElement('button');
-      btn.className = 'lang-btn';
-      btn.dataset.code = loc.code;
-      btn.innerHTML =
+      const opt = document.createElement('button');
+      opt.type = 'button';
+      opt.className = 'lang-option';
+      opt.dataset.code = loc.code;
+      opt.setAttribute('role', 'option');
+      opt.innerHTML =
         `<span class="lang-flag">${loc.flag}</span>` +
         `<span class="lang-name">${loc.name}</span>`;
-      btn.addEventListener('click', () => setLocale(loc.code));
-      host.appendChild(btn);
+      opt.addEventListener('click', e => {
+        e.stopPropagation();
+        setLocale(loc.code);
+        closeLangMenu(host);
+      });
+      menu.appendChild(opt);
     }
+
+    toggle.addEventListener('click', e => {
+      e.stopPropagation();
+      const isOpen = host.classList.contains('open');
+      closeAllLangMenus();
+      if (!isOpen) openLangMenu(host);
+    });
+
+    host.appendChild(toggle);
+    host.appendChild(menu);
   }
+
+  // One global listener closes any open menu when the user taps outside.
+  if (!document.body.dataset.langCloseBound) {
+    document.body.dataset.langCloseBound = '1';
+    document.addEventListener('pointerdown', e => {
+      if (!e.target.closest('.lang-dropdown')) closeAllLangMenus();
+    });
+  }
+
   renderLangPickers();
+}
+
+function openLangMenu(host) {
+  host.classList.add('open');
+  host.querySelector('.lang-dropdown-toggle')?.setAttribute('aria-expanded', 'true');
+  host.querySelector('.lang-dropdown-menu')?.classList.remove('hidden');
+}
+
+function closeLangMenu(host) {
+  host.classList.remove('open');
+  host.querySelector('.lang-dropdown-toggle')?.setAttribute('aria-expanded', 'false');
+  host.querySelector('.lang-dropdown-menu')?.classList.add('hidden');
+}
+
+function closeAllLangMenus() {
+  for (const host of document.querySelectorAll('.lang-dropdown.open')) {
+    closeLangMenu(host);
+  }
 }
 
 function renderLangPickers() {
   const cur = getLocale();
-  for (const btn of document.querySelectorAll('.lang-btn')) {
-    btn.classList.toggle('active', btn.dataset.code === cur);
+  const locale = LOCALES.find(l => l.code === cur) || LOCALES[0];
+  for (const toggle of document.querySelectorAll('.lang-dropdown-toggle')) {
+    toggle.innerHTML =
+      `<span class="lang-flag">${locale.flag}</span>` +
+      `<span class="lang-name">${locale.name}</span>` +
+      `<span class="lang-chevron" aria-hidden="true">▾</span>`;
+  }
+  for (const opt of document.querySelectorAll('.lang-option')) {
+    opt.classList.toggle('active', opt.dataset.code === cur);
   }
 }
 
 // ── Open / close ──
 
+const VIEW_SLIDERS = 'sliders';
+const VIEW_PICKER = 'picker';
+const VIEW_SETTINGS = 'settings';
+
 let isOpen = false;
-let inPickerMode = false;
+let currentView = VIEW_SLIDERS;
 
-// Slider list's vertical scroll position, captured at close time and
-// restored on the next open. The drawer's display:none toggle would
-// otherwise reset scrollTop on the inner overflow container.
+// Scroll positions per scrollable view, captured at close time and restored
+// on the next open. The drawer's display:none toggle would otherwise reset
+// scrollTop on the inner overflow containers.
 let savedSliderScroll = 0;
+let savedPickerScroll = 0;
 
-function open(picker = false) {
-  // If nothing is open, force picker mode — empty sliders view is useless.
-  if (getState().open.length === 0) picker = true;
-  inPickerMode = picker;
+function open(view = VIEW_SLIDERS) {
+  // If nothing is open, force picker — empty sliders view is useless.
+  if (getState().open.length === 0) view = VIEW_PICKER;
+  currentView = view;
   showView();
   drawerEl.classList.remove('hidden');
   scrimEl.classList.remove('hidden');
@@ -130,21 +209,12 @@ function open(picker = false) {
   drawerEl.classList.add('open');
   scrimEl.classList.add('visible');
   isOpen = true;
-
-  // Restore the slider list's scroll to where it was on the last close.
-  // requestAnimationFrame waits for layout so scrollTop assignments take.
-  if (!inPickerMode && sliderStackEl) {
-    requestAnimationFrame(() => {
-      sliderStackEl.scrollTop = savedSliderScroll;
-    });
-  }
+  restoreScrollForView(currentView);
 }
 
 function close() {
-  // Capture the slider list's scroll position before the drawer hides — the
-  // browser resets scrollTop when the element transitions to display:none,
-  // so we'll restore from this on the next open.
-  if (sliderStackEl) savedSliderScroll = sliderStackEl.scrollTop;
+  saveScrollForView(currentView);
+  closeAllLangMenus();
   drawerEl.classList.remove('open');
   scrimEl.classList.remove('visible');
   isOpen = false;
@@ -157,18 +227,38 @@ function close() {
 }
 
 function showView() {
-  slidersViewEl.classList.toggle('hidden', inPickerMode);
-  pickerViewEl.classList.toggle('hidden', !inPickerMode);
+  slidersViewEl.classList.toggle('hidden', currentView !== VIEW_SLIDERS);
+  pickerViewEl.classList.toggle('hidden', currentView !== VIEW_PICKER);
+  settingsViewEl.classList.toggle('hidden', currentView !== VIEW_SETTINGS);
 }
 
-function showPicker() {
-  inPickerMode = true;
+function switchView(next) {
+  if (currentView === next) return;
+  saveScrollForView(currentView);
+  currentView = next;
   showView();
+  restoreScrollForView(currentView);
 }
 
-function showSliders() {
-  inPickerMode = false;
-  showView();
+function showPicker()   { switchView(VIEW_PICKER); }
+function showSliders()  { switchView(VIEW_SLIDERS); }
+function showSettings() {
+  // Re-sync from storage in case the setting changed via another path.
+  if (settingsDebugToggle) settingsDebugToggle.checked = getDebugEnabled();
+  switchView(VIEW_SETTINGS);
+}
+
+function saveScrollForView(view) {
+  if (view === VIEW_SLIDERS && sliderStackEl) savedSliderScroll = sliderStackEl.scrollTop;
+  else if (view === VIEW_PICKER && pickerListEl) savedPickerScroll = pickerListEl.scrollTop;
+}
+
+function restoreScrollForView(view) {
+  // requestAnimationFrame waits for layout so scrollTop assignments take.
+  requestAnimationFrame(() => {
+    if (view === VIEW_SLIDERS && sliderStackEl) sliderStackEl.scrollTop = savedSliderScroll;
+    else if (view === VIEW_PICKER && pickerListEl) pickerListEl.scrollTop = savedPickerScroll;
+  });
 }
 
 // ── Peek: tap to open, drag-up to open ──
@@ -197,7 +287,7 @@ function bindPeek() {
     if (dragging && dy < -28) {
       // Pulled up far enough — commit
       releasePeek();
-      open(false);
+      open(VIEW_SLIDERS);
     }
   });
 
@@ -206,7 +296,7 @@ function bindPeek() {
     if (startY != null) releasePeek();
     if (!wasDragging) {
       // Treat as tap → open
-      open(false);
+      open(VIEW_SLIDERS);
     }
   });
   peekEl.addEventListener('pointercancel', releasePeek);
@@ -250,12 +340,26 @@ function bindDrawer() {
   grip.addEventListener('pointercancel', release);
 
   addBtn.addEventListener('click', showPicker);
+  settingsBtn.addEventListener('click', showSettings);
 }
 
 // ── Picker ──
 
 function bindPicker() {
   pickerBackBtn.addEventListener('click', showSliders);
+}
+
+// ── Settings ──
+
+function bindSettings() {
+  settingsBackBtn.addEventListener('click', showSliders);
+
+  settingsDebugToggle.checked = getDebugEnabled();
+  settingsDebugToggle.addEventListener('change', () => {
+    const v = settingsDebugToggle.checked;
+    setDebugEnabled(v);
+    setDebugVisible(v);
+  });
 }
 
 function buildPickerList() {
@@ -295,10 +399,10 @@ function onPickTractate(slug) {
     showSliders();
     close();
   } else {
-    // Newly opened masechtos almost always need a page chosen — leave the
-    // drawer in sliders view so the user can scrub the new slider.
-    openMasechta(slug);
-    onNavigate?.(slug, 2, 'a');
+    // Newly added masechtos wait for the user to pick a page — we add the
+    // slider but don't switch/load anything. The user scrubs to commit;
+    // jumpTo will then make it current and trigger the actual page load.
+    addMasechta(slug);
     showSliders();
     // Bring the new slider into view so the user can immediately scrub it
     // without hunting through a long stack.
@@ -309,16 +413,20 @@ function onPickTractate(slug) {
 // ── Welcome screen ──
 
 function bindWelcome() {
-  welcomeOpenBtn.addEventListener('click', () => {
-    open(true);
-  });
+  // open() defaults to VIEW_SLIDERS but auto-flips to VIEW_PICKER when
+  // nothing is open. That gives us: first-time → picker; mid-session
+  // (pending pick) → sliders to continue.
+  welcomeOpenBtn.addEventListener('click', () => open());
 }
 
 // ── Render: sliders + picker tile selection state ──
 
 function render(state) {
-  // Welcome vs. viewer
-  if (state.open.length === 0) {
+  // Welcome stays up until the user has actually committed to a page —
+  // i.e., a masechta is current. A pending add (slider exists but no
+  // current) leaves welcome up so closing the drawer without scrubbing
+  // doesn't reveal a blank viewer.
+  if (state.open.length === 0 || !state.current) {
     welcomeEl.classList.remove('hidden');
     onShowWelcome?.();
   } else {
@@ -335,6 +443,10 @@ function renderSliders(state) {
     sliderStackEl.innerHTML = `<div class="slider-empty">${t('drawer.empty')}</div>`;
     return;
   }
+
+  // Drop the empty-state placeholder if it's still in the DOM from a prior
+  // render when nothing was open.
+  sliderStackEl.querySelector('.slider-empty')?.remove();
 
   // Remove rows for masechtos no longer open
   const wantSlugs = new Set(state.open);
@@ -670,5 +782,5 @@ function handleCloseSlider(slug) {
 // ── External controls ──
 
 export function openPicker() {
-  open(true);
+  open(VIEW_PICKER);
 }

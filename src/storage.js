@@ -5,6 +5,21 @@ const LAST_LOC_KEY = 'talmud:last_location';
 const REGION_CACHE_KEY = 'talmud:regions:v14';
 const SESSION_KEY = 'talmud:session:v1';
 const REGION_ZOOM_KEY = 'talmud:region_zoom_px:v1';
+const DEBUG_KEY = 'talmud:debug';
+
+// User-visible "show debug overlay" toggle (Settings → debug). Independent
+// of the ?debug=1 URL flag, which also brings up the heavy tuning panel.
+export function getDebugEnabled() {
+  try { return localStorage.getItem(DEBUG_KEY) === '1'; }
+  catch { return false; }
+}
+
+export function setDebugEnabled(v) {
+  try {
+    if (v) localStorage.setItem(DEBUG_KEY, '1');
+    else localStorage.removeItem(DEBUG_KEY);
+  } catch { /* ignore */ }
+}
 
 // ── Per-fontSize preferred on-screen size (CSS pixels) ──
 //

@@ -66,6 +66,20 @@ export function openMasechta(slug, opts = {}) {
   switchTo(slug, opts);
 }
 
+// Add a masechta to the open list without switching to it. The slider row
+// appears immediately so the user can scrub to pick a page, but nothing is
+// loaded until they navigate. No-op if already open.
+export function addMasechta(slug) {
+  const t = getTractate(slug);
+  if (!t) return;
+  if (state.open.includes(slug)) return;
+
+  state.open = [...state.open, slug];
+  state.pages = { ...state.pages, [slug]: { daf: 2, amud: 'a' } };
+  state.freshOpens = [...state.freshOpens, slug];
+  notify();
+}
+
 // Switch the active masechta to one already open (or just-opened).
 // Drops a mark at the prior position if it differs.
 export function switchTo(slug, opts = {}) {

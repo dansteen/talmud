@@ -38,7 +38,7 @@
           <li data-i18n="welcome.guide.pull"></li>
         </ul>
         <button id="welcome-open-btn" data-i18n="welcome.openBtn"></button>
-        <div id="welcome-lang" class="lang-picker"></div>
+        <div id="welcome-lang" class="lang-dropdown"></div>
       </div>
     </div>
 
@@ -58,7 +58,10 @@
       <div id="sliders-view" class="drawer-view">
         <div id="slider-stack"></div>
         <button id="add-masechta-btn" data-i18n="drawer.addMasechta"></button>
-        <div id="drawer-lang" class="lang-picker"></div>
+        <div id="drawer-footer">
+          <div id="drawer-lang" class="lang-dropdown"></div>
+          <button id="settings-btn" data-i18n-aria="a11y.settings">⚙</button>
+        </div>
       </div>
 
       <!-- Picker sub-view -->
@@ -68,6 +71,20 @@
           <span id="picker-title" data-i18n="picker.title"></span>
         </div>
         <div id="picker-list"></div>
+      </div>
+
+      <!-- Settings sub-view -->
+      <div id="settings-view" class="drawer-view hidden">
+        <div id="settings-header">
+          <button id="settings-back-btn" data-i18n-aria="a11y.back">›</button>
+          <span id="settings-title" data-i18n="settings.title"></span>
+        </div>
+        <div id="settings-list">
+          <label class="settings-row">
+            <span class="settings-row-label" data-i18n="settings.debug"></span>
+            <input type="checkbox" id="settings-debug-toggle" class="settings-toggle">
+          </label>
+        </div>
       </div>
     </div>
 

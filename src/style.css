@@ -238,28 +238,34 @@ button {
   background: rgba(255, 220, 150, 0.25);
 }
 
-/* ── Language picker (welcome + drawer) ── */
+/* ── Language dropdown (welcome + drawer) ── */
 
-.lang-picker {
-  margin-top: 28px;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 6px 10px;
+.lang-dropdown {
+  position: relative;
+  display: inline-block;
 }
 
-.lang-btn {
-  background: none;
-  border: none;
+#welcome-lang {
+  margin-top: 28px;
+}
+
+.lang-dropdown-toggle {
+  background: rgba(255, 220, 150, 0.08);
+  border: 1px solid rgba(255, 220, 150, 0.2);
   padding: 6px 10px;
-  border-radius: 6px;
-  color: rgba(255, 220, 150, 0.55);
+  border-radius: 8px;
+  color: rgba(255, 220, 150, 0.85);
   font-size: 14px;
-  cursor: pointer;
   font-family: inherit;
+  cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-height: 32px;
+}
+
+.lang-dropdown-toggle:active {
+  background: rgba(255, 220, 150, 0.15);
 }
 
 .lang-flag {
@@ -270,17 +276,175 @@ button {
   line-height: 1;
 }
 
-.lang-btn:active {
-  background: rgba(255, 220, 150, 0.1);
+.lang-chevron {
+  font-size: 10px;
+  opacity: 0.6;
+  margin-inline-start: 2px;
 }
 
-.lang-btn.active {
-  color: rgba(255, 235, 180, 1);
+.lang-dropdown-menu {
+  position: absolute;
+  /* Open upward by default — both placements (drawer footer, welcome card
+     above the bottom safe area) sit close to the bottom of the screen. */
+  bottom: calc(100% + 6px);
+  inset-inline-start: 0;
+  min-width: 160px;
+  background: #2a2010;
+  border: 1px solid rgba(255, 220, 150, 0.2);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lang-option {
+  background: none;
+  border: none;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: rgba(255, 220, 150, 0.85);
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: start;
+  white-space: nowrap;
+}
+
+.lang-option:active {
   background: rgba(255, 220, 150, 0.12);
 }
 
-#drawer-lang {
-  margin: 4px 16px 12px;
+.lang-option.active {
+  color: rgba(255, 235, 180, 1);
+  background: rgba(255, 220, 150, 0.14);
+}
+
+/* ── Drawer footer (lang dropdown + settings button) ── */
+
+#drawer-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 16px 12px;
+  gap: 8px;
+}
+
+#settings-btn {
+  background: none;
+  border: 1px solid rgba(255, 220, 150, 0.2);
+  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  font-size: 18px;
+  color: rgba(255, 220, 150, 0.85);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+#settings-btn:active {
+  background: rgba(255, 220, 150, 0.12);
+}
+
+/* ── Settings view ── */
+
+#settings-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 8px 12px 12px;
+  border-bottom: 1px solid rgba(255, 220, 150, 0.08);
+}
+
+#settings-back-btn {
+  background: none;
+  border: none;
+  color: rgba(255, 220, 150, 0.85);
+  font-size: 28px;
+  line-height: 1;
+  padding: 4px 12px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+#settings-back-btn:active {
+  background: rgba(255, 220, 150, 0.1);
+}
+
+#settings-title {
+  font-family: serif;
+  font-size: 18px;
+  color: rgba(255, 220, 150, 0.9);
+  margin-inline-start: 4px;
+}
+
+#settings-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px 20px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 12px;
+  background: rgba(255, 220, 150, 0.05);
+  border: 1px solid rgba(255, 220, 150, 0.1);
+  border-radius: 10px;
+  font-size: 15px;
+  color: rgba(255, 220, 150, 0.9);
+  cursor: pointer;
+}
+
+.settings-row-label {
+  flex: 1;
+  margin-inline-end: 12px;
+}
+
+/* Simple iOS-style switch built off a checkbox. The thumb sits at the
+   inline-start edge when off and slides to the inline-end edge when on,
+   so it works in both LTR and RTL via logical properties. */
+.settings-toggle {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 44px;
+  height: 26px;
+  background: rgba(255, 220, 150, 0.18);
+  border-radius: 13px;
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.settings-toggle::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  inset-inline-start: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(255, 235, 180, 1);
+  transition: inset-inline-start 0.15s;
+}
+
+.settings-toggle:checked {
+  background: rgba(255, 200, 100, 0.6);
+}
+
+.settings-toggle:checked::before {
+  inset-inline-start: 20px;
 }
 
 /* ── Peek (always visible at bottom) ──
@@ -403,10 +567,14 @@ button {
 }
 
 .slider-row.active {
-  background: rgba(255, 220, 150, 0.07);
+  background: rgba(255, 220, 150, 0.14);
   /* Leading-edge highlight: in RTL the leading edge is the right, so we
-     offset the inset shadow to the left to expose 3px on the right. */
-  box-shadow: inset -3px 0 0 rgba(255, 230, 170, 0.85);
+     offset the inset shadow to the left to expose 5px on the right.
+     Bright + thick so the active row reads as the obvious "current"
+     row in a stack. */
+  box-shadow:
+    inset -5px 0 0 rgba(255, 230, 170, 1),
+    0 0 0 1px rgba(255, 230, 170, 0.18);
 }
 
 .slider-row-header {
@@ -423,7 +591,12 @@ button {
 }
 
 .slider-row.active .slider-name {
-  color: rgba(255, 230, 170, 1);
+  color: rgba(255, 240, 200, 1);
+  font-weight: 500;
+}
+
+.slider-row.active .slider-name-current {
+  color: rgba(255, 230, 170, 0.95);
 }
 
 .slider-name-current {

@@ -75,17 +75,21 @@ let pixelImageData = null;
 const HYBRID_KEY = 'regionHybridConfig';
 const HYBRID_DEFAULTS  = { pixel: true, text: true, order: 'auto', sideMerge: true };
 const OVERLAY_DEFAULTS = { mask: false, boxes: true, colors: true, ids: true };
+// Bumped whenever an existing saved field needs to be migrated to a
+// new default. A saved blob without _version (or with an older one)
+// has its `order` reset to the default so the "auto" rollout takes
+// effect for sessions that had a manual ordering stored.
+const HYBRID_VERSION = 2;
 const hybrid = (() => {
   try {
     const saved = JSON.parse(localStorage.getItem(HYBRID_KEY) || 'null');
     if (saved && typeof saved === 'object') {
-      const order = ['auto', 'pixel,text', 'text,pixel'].includes(saved.order)
-        ? saved.order
-        : 'auto';
+      const validOrder = ['auto', 'pixel,text', 'text,pixel'].includes(saved.order);
+      const upToDate   = saved._version === HYBRID_VERSION;
       return {
         pixel:     saved.pixel !== false,
         text:      !!saved.text,
-        order,
+        order:     (upToDate && validOrder) ? saved.order : HYBRID_DEFAULTS.order,
         sideMerge: saved.sideMerge !== false,
       };
     }
@@ -93,7 +97,9 @@ const hybrid = (() => {
   return { ...HYBRID_DEFAULTS };
 })();
 function persistHybrid() {
-  try { localStorage.setItem(HYBRID_KEY, JSON.stringify(hybrid)); } catch {}
+  try {
+    localStorage.setItem(HYBRID_KEY, JSON.stringify({ ...hybrid, _version: HYBRID_VERSION }));
+  } catch {}
 }
 
 // Diagnostic counters from the most recent side-column merge attempt.
@@ -702,8 +708,12 @@ function detectHybrid() {
     return { regions: [], labels: new Int32Array(N), gridW, gridH, cellSize: 1, grid, gutterMask };
   }
 
-  // Run the sequential-refinement pipeline for a specific method ordering.
-  const runSequence = (methodSeq) => {
+  // Run the FULL pipeline — sequential refinement + side-column merge
+  // + title filter — for a specific method ordering. Returns the
+  // final region list and the merge diagnostics so the caller can
+  // compare orderings on post-merge counts.
+  const sideFrac = hybrid.sideMerge ? (regionOpts.sideFrac ?? 0.05) : 0;
+  const runPipeline = (methodSeq) => {
     let regionList = [{ mask: fullPageMask(N) }];
     let firstPass = true;
     for (const method of methodSeq) {
@@ -719,55 +729,52 @@ function detectHybrid() {
       regionList = next;
       firstPass = false;
     }
-    return regionList;
+
+    const withBbox = [];
+    for (const r of regionList) {
+      const info = bboxFromMask(r.mask, gridW, gridH);
+      if (info) withBbox.push({ mask: r.mask, bbox: info.bbox, area: info.area });
+    }
+
+    // mergeSideColumns writes into lastMergeStats as a side effect;
+    // snapshot it so each invocation's stats are captured separately
+    // (we'll restore the winning order's stats at the end).
+    const outerStats = lastMergeStats;
+    lastMergeStats = null;
+    const merged = mergeSideColumns(withBbox, gridW, gridH, sideFrac);
+    const myMergeStats = lastMergeStats;
+    lastMergeStats = outerStats;
+
+    for (const r of merged) {
+      r.fontSize = medianFontSizeInside(r.mask, gridW, gridH, textItems);
+    }
+    const finalList = filterTitleRegions(merged, gridH);
+    return { regions: finalList, mergeStats: myMergeStats };
   };
 
-  // Pick the method sequence to run. For "auto" with both methods
-  // enabled, try both orderings and take whichever produces more
-  // pre-merge regions (more separation = better detection). With
-  // only one method enabled, ordering is moot.
-  let regionList, chosenOrder = enabledMethods.join(',');
+  // For "auto" with both methods enabled, run both orderings and
+  // pick the one whose POST-merge final region count is larger
+  // (more separation surviving the merge = better detection on
+  // this page).
+  let result, chosenOrder;
   if (enabledMethods.length === 2 && hybrid.order === 'auto') {
-    const tryPT = runSequence(['pixel', 'text']);
-    const tryTP = runSequence(['text', 'pixel']);
-    if (tryTP.length > tryPT.length) {
-      regionList = tryTP;
-      chosenOrder = 'text,pixel';
+    const tryPT = runPipeline(['pixel', 'text']);
+    const tryTP = runPipeline(['text', 'pixel']);
+    if (tryTP.regions.length > tryPT.regions.length) {
+      result = tryTP; chosenOrder = 'text,pixel';
     } else {
-      regionList = tryPT;
-      chosenOrder = 'pixel,text';
+      result = tryPT; chosenOrder = 'pixel,text';
     }
-    lastAutoOrder = { tryPT: tryPT.length, tryTP: tryTP.length, chosen: chosenOrder };
+    lastAutoOrder = { tryPT: tryPT.regions.length, tryTP: tryTP.regions.length, chosen: chosenOrder };
   } else {
-    const order = hybrid.order === 'text,pixel'
-      ? ['text', 'pixel']
-      : ['pixel', 'text'];
-    regionList = runSequence(order.filter(m => hybrid[m]));
-    chosenOrder = order.filter(m => hybrid[m]).join(',');
+    const order = hybrid.order === 'text,pixel' ? ['text', 'pixel'] : ['pixel', 'text'];
+    const seq = order.filter(m => hybrid[m]);
+    result = runPipeline(seq);
+    chosenOrder = seq.join(',');
     lastAutoOrder = null;
   }
-
-  // Compute bbox/area for each region so the side-column merge can use
-  // centroid positions.
-  const withBbox = [];
-  for (const r of regionList) {
-    const info = bboxFromMask(r.mask, gridW, gridH);
-    if (info) withBbox.push({ mask: r.mask, bbox: info.bbox, area: info.area });
-  }
-
-  // Post-process: collapse fragmented side-column pieces into one region
-  // per side. Gated by the `merge sides` checkbox; `sideFrac` is the
-  // centroid threshold (slider).
-  lastMergeStats = null;
-  const sideFrac = hybrid.sideMerge ? (regionOpts.sideFrac ?? 0.05) : 0;
-  const merged = mergeSideColumns(withBbox, gridW, gridH, sideFrac);
-
-  // Attach fontSize to each merged region — needed for the title filter
-  // (which compares each region's fontSize to the page median).
-  for (const r of merged) {
-    r.fontSize = medianFontSizeInside(r.mask, gridW, gridH, textItems);
-  }
-  const filtered = filterTitleRegions(merged, gridH);
+  lastMergeStats = result.mergeStats;
+  const filtered = result.regions;
 
   // Assign sequential ids; build the unified labels grid.
   const labels = new Int32Array(N);

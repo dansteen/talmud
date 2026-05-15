@@ -1296,21 +1296,26 @@ const ALWAYS_TOP_PX = 10;
 // Compute a target view transform that, in order of preference:
 //
 //   horizontal axis (priority LEFT for context overflow):
-//     P1: if the local contiguous extent around the tap (walked left
-//         and right until a gutter / region boundary) fits the
-//         effective viewport at the new scale, use it. For a region
-//         with no internal vertical gutter this equals the bbox
-//         width; with one, the walk stops at the gutter so only the
-//         side the user tapped is framed.
-//     P2: else (chosen extent is wider than the effective viewport)
-//         — if tap → row.max still fits, pin the row's right edge to
-//         the effective viewport's right edge; otherwise centre on
-//         the tap.
+//     P1: if region.bbox.w fits the effective viewport at the new
+//         scale, use the full bbox extent (preserves the "show the
+//         entire bbox" preference, even for an H-shape where the
+//         bbox crosses an internal gutter — at a wide-enough zoom
+//         the user can see the whole thing).
+//     P2: else if the local contiguous extent around the tap
+//         (walked left and right until a gutter / region boundary)
+//         fits, use it. Stopping at the gutter only applies once the
+//         bbox no longer fits — for an H-shape at reading zoom this
+//         is the typical case and the user sees just the side they
+//         tapped.
+//     P3: else — if tap → row.max still fits, pin the row's right
+//         edge to the effective viewport's right edge; otherwise
+//         centre on the tap.
 //
 //   vertical axis (priority BOTTOM):
-//     P1: if the local contiguous vertical extent (walked up and
-//         down until a gutter) fits, use it.
-//     P2: else centre on the tap.
+//     P1: if region.bbox.h fits, use the full bbox extent.
+//     P2: else if the local contiguous vertical extent (walked up
+//         and down until a gutter) fits, use it.
+//     P3: else centre on the tap.
 //
 // "Effective viewport" excludes a fixed `ALWAYS_RIGHT_PX` strip on
 // the right and `ALWAYS_TOP_PX` strip on the top — those strips are
@@ -1369,18 +1374,22 @@ export function transformForRegion(region, pdfX, pdfY, fontSize, targetFontPx) {
     return ALWAYS_TOP_PX + H_eff / 2 - center * s;
   };
 
-  // Pick the widest local extent that still fits horizontally. The
-  // local extent already represents the full region width when there
-  // are no internal gutters (the walk runs to the bbox edges), so no
-  // separate "bbox" priority is needed — and a vertical gutter inside
-  // the bbox is now respected automatically.
+  // Try the full bbox first; fall back to the local walked extent
+  // (which stops at internal gutters) only when the bbox can't fit
+  // at the target zoom.
   let hMin, hMax;
-  if (row && row.w * s <= W_eff) {
+  if (region.bbox.w * s <= W_eff) {
+    hMin = region.bbox.x;
+    hMax = region.bbox.x + region.bbox.w;
+  } else if (row && row.w * s <= W_eff) {
     hMin = row.min;
     hMax = row.max;
   }
   let vMin, vMax;
-  if (col && col.h * s <= H_eff) {
+  if (region.bbox.h * s <= H_eff) {
+    vMin = region.bbox.y;
+    vMax = region.bbox.y + region.bbox.h;
+  } else if (col && col.h * s <= H_eff) {
     vMin = col.min;
     vMax = col.max;
   }
